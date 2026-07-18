@@ -493,7 +493,7 @@
       <label for="remember-key-checkbox">Remember this key on this device</label>
     </div>
 
-    <button id="save-key-btn" onclick="notReady('Save API Key')">Save Key</button>
+    <button id="save-key-btn" onclick="saveApiKey()">Save Key</button>
     <div id="key-status"></div>
   </div>
 </div>
@@ -501,14 +501,28 @@
 <!-- ============ TOAST ============ -->
 <div id="toast"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
 <script>
   // ---------------------------------------------------------------
-  // ClassScan — Step 1.2
-  // Adds: rear camera preview, Start->Capture/Stop flow (discrete
-  // pipeline only), freeze-frame on Capture, READY FOR NEXT banner,
-  // and the flashlight (torch) toggle.
-  // Still NOT implemented: QR decode, vision API calls, table logic,
-  // continuous sub-mode, roster, export. Those buttons still toast.
+  // ClassScan — Step 1.3
+  // Adds: VisionEngine adapter (GeminiVisionEngine active,
+  // AnthropicVisionEngine stub), Settings API-key wiring (in-memory +
+  // optional localStorage "remember on this device"), the global
+  // 4-second vision-call throttle queue, local jsQR decoding of card
+  // name-QRs (QR overrides vision-read name), the Cards-front vision
+  // prompt, and writing scan results into the results table with
+  // low-confidence amber flagging.
+  //
+  // SCOPE NOTE: this step decodes/matches ONE QR-code card per photo.
+  // True multi-card (up to ~6) discrete capture needs a defined way to
+  // spatially match multiple decoded QR codes to multiple vision
+  // entries, which the Blueprint doesn't specify — flagged to the user
+  // rather than guessed at, to avoid silently mismatching names to
+  // responses.
+  //
+  // Still NOT implemented: roster, Anonymous, Undo, tap-to-edit,
+  // Average/Tally/Chart, Link/export, continuous sub-mode, Quiz/
+  // Participation prompts. Those buttons still toast.
   // ---------------------------------------------------------------
 
   let toastTimer = null;
@@ -561,6 +575,350 @@
     }
 
     showToast('Mode switching logic (table clear/confirm) — coming soon');
+  }
+
+  // ---------------------------------------------------------------
+  // VISION ENGINE ADAPTER (Blueprint Section 2)
+  // The rest of the app calls ONLY VisionEngine.analyze(...). It never
+  // references Gemini (or any other provider) directly, so the engine
+  // can be swapped later by changing VisionEngine.active.
+  // ---------------------------------------------------------------
+
+  // Verified against https://ai.google.dev/gemini-api/docs (accessed 2026-07-17):
+  // Gemini 3.5 Flash is Google's current GA, recommended Flash-class model,
+  // called via the v1beta REST endpoint below. If Google renames/retires
+  // this model later, only GEMINI_MODEL needs to change.
+  const GEMINI_MODEL = 'gemini-3.5-flash';
+  const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
+
+  function tryParseJSON(text) {
+    if (!text) return null;
+    let cleaned = text.trim();
+    // Defensive cleanup in case the model adds fences despite instructions.
+    cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+    try {
+      return JSON.parse(cleaned);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function translateGeminiError(err) {
+    if (err && err.name === 'TypeError') {
+      return new Error('Check WiFi — could not reach the vision service.');
+    }
+    if (err && (err.httpStatus === 400 || err.httpStatus === 401 || err.httpStatus === 403)) {
+      return new Error('API key rejected — re-enter in Settings.');
+    }
+    if (err && err.httpStatus === 429) {
+      return new Error('Rate limit — wait a few seconds, the queue will retry.');
+    }
+    if (err && err.httpStatus >= 500) {
+      return new Error('Vision service is temporarily unavailable. Try again in a moment.');
+    }
+    return err;
+  }
+
+  async function callGeminiOnce(imageBase64, promptText) {
+    const url = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
+      body: JSON.stringify({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: promptText },
+            { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }
+          ]
+        }],
+        generationConfig: {
+          responseMimeType: 'application/json'
+        }
+      })
+    });
+
+    if (!res.ok) {
+      const err = new Error('Gemini API error ' + res.status);
+      err.httpStatus = res.status;
+      throw err;
+    }
+
+    const data = await res.json();
+    const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+    return parts.map(p => p.text || '').join('');
+  }
+
+  const GeminiVisionEngine = {
+    name: 'gemini',
+    async analyze(imageBase64, modeSpec) {
+      if (!apiKey) {
+        throw new Error('No API key set — open Settings (⚙️) and paste your Gemini API key.');
+      }
+
+      const basePrompt = modeSpec.prompt;
+      let rawText;
+
+      try {
+        rawText = await callGeminiOnce(imageBase64, basePrompt);
+      } catch (err) {
+        throw translateGeminiError(err);
+      }
+
+      let parsed = tryParseJSON(rawText);
+
+      if (!parsed) {
+        // One retry with a JSON-only reminder appended (Blueprint Section 12).
+        try {
+          rawText = await callGeminiOnce(imageBase64, basePrompt + '\n\nIMPORTANT: reply with JSON only, no prose, no markdown fences.');
+        } catch (err) {
+          throw translateGeminiError(err);
+        }
+        parsed = tryParseJSON(rawText);
+      }
+
+      if (!parsed) {
+        throw new Error('Scan not understood — try again.');
+      }
+
+      if (!parsed.entries) parsed.entries = [];
+      if (!parsed.warnings) parsed.warnings = [];
+      return parsed;
+    }
+  };
+
+  const AnthropicVisionEngine = {
+    name: 'anthropic',
+    async analyze(imageBase64, modeSpec) {
+      // TODO: implement if/when an Anthropic vision engine is wired in.
+      // Must resolve to the same shape as GeminiVisionEngine:
+      // {entries: [...], warnings: [...]}
+      throw new Error('AnthropicVisionEngine is not implemented yet.');
+    }
+  };
+
+  const VisionEngine = {
+    active: GeminiVisionEngine,
+    analyze(imageBase64, modeSpec) {
+      return VisionEngine.active.analyze(imageBase64, modeSpec);
+    }
+  };
+
+  // ---------------------------------------------------------------
+  // GLOBAL 4-SECOND VISION THROTTLE QUEUE (Blueprint Section 2)
+  // All modes funnel vision calls through this so no two calls ever
+  // fire less than 4 seconds apart, regardless of how fast the
+  // teacher taps Capture.
+  // ---------------------------------------------------------------
+  const VISION_THROTTLE_MS = 4000;
+  let lastVisionCallStart = 0;
+  let visionQueueTail = Promise.resolve();
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function enqueueVisionCall(taskFn) {
+    const runner = visionQueueTail.then(async () => {
+      const now = Date.now();
+      const waitMs = Math.max(0, lastVisionCallStart + VISION_THROTTLE_MS - now);
+      if (waitMs > 0) {
+        setStatus('Waiting for API throttle (' + Math.ceil(waitMs / 1000) + 's)…');
+        await sleep(waitMs);
+      }
+      lastVisionCallStart = Date.now();
+      return taskFn();
+    });
+    // Don't let one failed call break the queue for calls behind it.
+    visionQueueTail = runner.catch(() => {});
+    return runner;
+  }
+
+  // ---------------------------------------------------------------
+  // CARDS-FRONT VISION PROMPT (Blueprint Section 5)
+  // ---------------------------------------------------------------
+  const CARDS_FRONT_PROMPT = `You are reading a photo of one or more paper response cards used in a classroom.
+
+CARD LAYOUT (front face, blue template ink):
+- A printed student name near a small QR code at the top.
+- A "condition" area: bubble options A, B, C, D (may be marked) PLUS a small freeform text box (max 6 characters).
+- One large freeform response box (max 10 characters, block letters). Expected content is usually a number, a single letter, "Yes"/"No", or a short word.
+
+RULES:
+- Cards may be tilted or rotated in the photo.
+- Multiple cards may appear in one photo (up to about 6). Report one entry per card you can see.
+- Printed template ink is blue or green. Student marks and handwriting are BLACK. Only read BLACK marks/handwriting as student answers — ignore the printed blue/green template lines and boxes themselves.
+- Ignore faded, smudged, or off-color marks that look like erased or prior answers.
+- Ignore any handwriting outside the designated name/condition/response boxes.
+- If a field is unreadable or ambiguous, return your best guess and mark that card's confidence as "low". If you truly cannot make any guess for a field, return an empty string for it.
+- Never invent data that is not visibly present on the card.
+- If more than one condition bubble (A-D) appears marked on the same card, mark that card's confidence as "low" and still report your best guess (or empty string if there is no reasonable guess).
+
+FOR EACH CARD, REPORT:
+- "key": the printed student name text near the QR code (best-effort reading only — do not guess a name that isn't printed there).
+- "fields.response": the content of the large response box, max 10 characters.
+- "fields.conditionBubble": which condition bubble is marked — one of "A", "B", "C", "D", or "" if none marked.
+- "fields.conditionText": the content of the small condition text box, max 6 characters, or "" if empty.
+- "confidence": "high" or "low" for the card as a whole.
+
+Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly this shape:
+{"entries":[{"key":"<name>","fields":{"response":"<text>","conditionBubble":"<A|B|C|D|>","conditionText":"<text>"},"confidence":"high|low"}],"warnings":["<short warning strings, or an empty array>"]}`;
+
+  // ---------------------------------------------------------------
+  // API KEY / SETTINGS WIRING (Blueprint Section 2)
+  // ---------------------------------------------------------------
+  let apiKey = '';
+
+  function loadSavedApiKey() {
+    try {
+      const saved = localStorage.getItem('classscan_gemini_key');
+      if (saved) {
+        apiKey = saved;
+        document.getElementById('api-key-input').value = saved;
+        document.getElementById('remember-key-checkbox').checked = true;
+        const statusEl = document.getElementById('key-status');
+        statusEl.style.color = 'var(--green)';
+        statusEl.textContent = 'Using a saved key from this device.';
+      }
+    } catch (err) {
+      // localStorage unavailable (e.g. private browsing) — key just won't persist.
+    }
+  }
+
+  function saveApiKey() {
+    const input = document.getElementById('api-key-input');
+    const remember = document.getElementById('remember-key-checkbox').checked;
+    const value = input.value.trim();
+    const statusEl = document.getElementById('key-status');
+
+    if (!value) {
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = 'Please paste a key before saving.';
+      return;
+    }
+
+    apiKey = value;
+
+    try {
+      if (remember) {
+        localStorage.setItem('classscan_gemini_key', value);
+      } else {
+        localStorage.removeItem('classscan_gemini_key');
+      }
+    } catch (err) {
+      // ignore storage errors — key still works for this session via the JS variable
+    }
+
+    statusEl.style.color = 'var(--green)';
+    statusEl.textContent = remember
+      ? 'Key saved for this session and remembered on this device.'
+      : 'Key saved for this session only.';
+    showToast('API key saved');
+    closeSettings();
+  }
+
+  // ---------------------------------------------------------------
+  // RESULTS TABLE (Cards mode, front face, no roster yet — Section 7:
+  // "If no roster is loaded, rows are created directly from scans")
+  // ---------------------------------------------------------------
+  let tableData = {}; // key: lowercased trimmed name -> row object
+
+  function computeConditionDisplay(bubble, text) {
+    if (bubble && text) return bubble + ' — ' + text;
+    if (bubble) return bubble;
+    if (text) return text;
+    return '';
+  }
+
+  function renderTable() {
+    const keys = Object.keys(tableData);
+    const tbody = document.getElementById('table-body');
+    const emptyState = document.getElementById('empty-state');
+    const headerRow = document.getElementById('table-header-row');
+
+    if (keys.length === 0) {
+      tbody.innerHTML = '';
+      emptyState.style.display = 'block';
+      return;
+    }
+    emptyState.style.display = 'none';
+
+    const anyCondition = keys.some(k => computeConditionDisplay(tableData[k].conditionBubble, tableData[k].conditionText) !== '');
+
+    headerRow.innerHTML = '<th>Name</th><th>Response</th>' + (anyCondition ? '<th>Condition</th>' : '');
+
+    const sortedKeys = keys.sort((a, b) =>
+      tableData[a].displayName.localeCompare(tableData[b].displayName, undefined, { sensitivity: 'base' })
+    );
+
+    tbody.innerHTML = '';
+    sortedKeys.forEach(k => {
+      const row = tableData[k];
+      const tr = document.createElement('tr');
+
+      const nameTd = document.createElement('td');
+      nameTd.textContent = row.displayName;
+      tr.appendChild(nameTd);
+
+      const responseTd = document.createElement('td');
+      responseTd.textContent = row.response;
+      if (row.lowConfidence) responseTd.classList.add('low-confidence');
+      tr.appendChild(responseTd);
+
+      if (anyCondition) {
+        const conditionTd = document.createElement('td');
+        conditionTd.textContent = computeConditionDisplay(row.conditionBubble, row.conditionText);
+        if (row.lowConfidence) conditionTd.classList.add('low-confidence');
+        tr.appendChild(conditionTd);
+      }
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function applyVisionResult(result, qrName) {
+    const entries = result.entries || [];
+
+    if (entries.length === 0) {
+      showToast('No card detected in that photo — try again');
+      return;
+    }
+
+    const singleCard = entries.length === 1;
+
+    entries.forEach(entry => {
+      let displayName = (entry.key || '').toString().trim();
+
+      // QR-overrides-vision matching (Blueprint Section 5) — only safe to
+      // apply automatically when there's exactly one card in the photo.
+      if (singleCard && qrName) {
+        displayName = qrName;
+      }
+
+      if (!displayName) {
+        displayName = '(unreadable name)';
+      }
+
+      const fields = entry.fields || {};
+      const rowKey = displayName.toLowerCase();
+
+      tableData[rowKey] = {
+        displayName: displayName,
+        response: (fields.response || '').toString().slice(0, 10),
+        conditionBubble: (fields.conditionBubble || '').toString().slice(0, 1).toUpperCase(),
+        conditionText: (fields.conditionText || '').toString().slice(0, 6),
+        lowConfidence: entry.confidence === 'low'
+      };
+    });
+
+    if (entries.length > 1 && qrName) {
+      showToast('Multiple cards in one photo — QR override skipped (one card per photo for now)');
+    }
+
+    renderTable();
   }
 
   // ---- Camera state (discrete sub-mode only, per Blueprint Section 6) ----
@@ -629,10 +987,10 @@
 
     cameraActive = true;
     startCaptureBtn.textContent = 'Capture';
-    setStatus('Camera ready. Tap Capture to freeze a frame. (QR + AI analysis not connected yet.)');
+    setStatus('Camera ready. Tap Capture to scan a card.');
   }
 
-  function captureFrame() {
+  async function captureFrame() {
     if (!cameraActive || capturing) return;
     capturing = true;
 
@@ -654,20 +1012,65 @@
     // Freeze: show the captured still over the live feed.
     canvasEl.style.display = 'block';
     videoEl.style.display = 'none';
-    setStatus('Frame captured — confirming image. (This is where QR decode + AI analysis will run in a later step.)');
+    setStatus('Frame captured — reading QR code…');
 
-    // Simulate the pipeline gap where QR decode + vision call will happen later.
-    setTimeout(() => {
-      canvasEl.style.display = 'none';
+    // Local QR pass (jsQR) — decodes at most one QR per photo in this step.
+    let qrName = null;
+    try {
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const qrResult = jsQR(imageData.data, imageData.width, imageData.height);
+      if (qrResult && qrResult.data && qrResult.data.trim()) {
+        qrName = qrResult.data.trim();
+      }
+    } catch (err) {
+      qrName = null; // QR decode failure just means no override, not fatal.
+    }
+
+    if (!apiKey) {
+      setStatus('No API key set — open Settings (⚙️) and paste your Gemini API key.');
+      showToast('API key missing — open Settings');
+      resumeLiveView(false);
+      return;
+    }
+
+    setStatus('Sending photo to the vision service…');
+
+    const dataUrl = canvasEl.toDataURL('image/jpeg', 0.85);
+    const base64 = dataUrl.split(',')[1];
+
+    try {
+      const result = await enqueueVisionCall(() =>
+        VisionEngine.analyze(base64, { prompt: CARDS_FRONT_PROMPT })
+      );
+      applyVisionResult(result, qrName);
+      setStatus('Scan added to the table.');
+      resumeLiveView(true);
+    } catch (err) {
+      const msg = (err && err.message) || 'Scan not understood — try again.';
+      setStatus(msg);
+      showToast(msg);
+      resumeLiveView(false);
+    }
+  }
+
+  function resumeLiveView(showBanner) {
+    canvasEl.style.display = 'none';
+    if (cameraActive) {
       videoEl.style.display = 'block';
-      bannerEl.style.display = 'block';
+    }
 
+    if (showBanner) {
+      bannerEl.style.display = 'block';
       setTimeout(() => {
         bannerEl.style.display = 'none';
-        setStatus('Camera ready. Tap Capture for the next scan.');
+        if (cameraActive) {
+          setStatus('Camera ready. Tap Capture for the next scan.');
+        }
         capturing = false;
       }, 1500);
-    }, 1000);
+    } else {
+      capturing = false;
+    }
   }
 
   function stopCamera() {
@@ -748,6 +1151,9 @@
   function closeSettings() {
     document.getElementById('settings-screen').style.display = 'none';
   }
+
+  // ---- Init ----
+  loadSavedApiKey();
 </script>
 
 </body>
