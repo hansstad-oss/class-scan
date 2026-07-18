@@ -602,13 +602,16 @@
   // can be swapped later by changing VisionEngine.active.
   // ---------------------------------------------------------------
 
-  // gemini-2.5-flash (Blueprint Section 2) — chosen over the newer
-  // gemini-3.5-flash because 3.5's free-tier daily quota (20 req/day,
-  // confirmed via a live 429 on 2026-07-18) is too low for classroom use;
-  // 2.5-flash reports a much higher free-tier daily quota. Called via the
-  // v1beta REST endpoint below. If Google renames/retires this model
-  // later, only GEMINI_MODEL needs to change.
-  const GEMINI_MODEL = 'gemini-2.5-flash';
+  // gemini-3.1-flash-lite (Blueprint Section 2) — third choice after two
+  // dead ends confirmed live on this account: gemini-3.5-flash capped at
+  // 20 req/day (too low for classroom use), gemini-2.5-flash returns
+  // HTTP 404 "no longer available to new users" (retired). Flash-Lite
+  // tiers consistently report the most generous free-tier request
+  // volume (~1,000 req/day), and this account already has confirmed
+  // access to the Gemini 3.x line. Called via the v1beta REST endpoint
+  // below. If Google renames/retires this model later, only
+  // GEMINI_MODEL needs to change.
+  const GEMINI_MODEL = 'gemini-3.1-flash-lite';
   const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
   function tryParseJSON(text) {
