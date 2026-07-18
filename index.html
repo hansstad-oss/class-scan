@@ -126,31 +126,61 @@
 
   /* ---------- MIDDLE / CAMERA AREA ---------- */
   #middle-area {
+    position: relative;
     background: #000;
     color: #fff;
-    min-height: 220px;
+    min-height: 280px;
+    overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
-    flex-direction: column;
-    padding: 16px;
-    text-align: center;
   }
 
   #camera-placeholder {
+    position: relative;
+    z-index: 1;
     font-size: 16px;
     color: #bbb;
     line-height: 1.5;
+    text-align: center;
+    padding: 16px;
+  }
+
+  #camera-video {
+    display: none;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 2;
+  }
+
+  #freeze-canvas {
+    display: none;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #000;
+    z-index: 3;
   }
 
   #ready-banner {
     display: none;
+    position: absolute;
+    z-index: 4;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
     background: var(--green);
     color: #fff;
     font-size: 26px;
     font-weight: 700;
-    padding: 20px;
+    padding: 20px 28px;
     border-radius: 12px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.4);
   }
 
   #status-line {
@@ -391,27 +421,29 @@
     <div id="toggle-row">
       <button class="toggle-btn" id="submode-toggle" onclick="notReady('Discrete/Continuous switch')">Discrete</button>
       <button class="toggle-btn" id="ghost-toggle" onclick="notReady('Anonymous mode')">👻 Anonymous</button>
-      <button class="toggle-btn" id="torch-toggle" onclick="notReady('Flashlight')">🔦 Flashlight</button>
+      <button class="toggle-btn" id="torch-toggle" onclick="toggleTorch()">🔦 Flashlight</button>
     </div>
   </div>
 
   <!-- ============ STATUS LINE ============ -->
-  <div id="status-line">Ready. (No camera or API connected yet — this is the layout shell.)</div>
+  <div id="status-line">Ready. Tap Start to open the camera. (QR reading and AI analysis are not connected yet.)</div>
 
   <!-- ============ MIDDLE / CAMERA AREA ============ -->
   <div id="middle-area">
     <div id="camera-placeholder">
       📷<br>
       Camera preview will appear here.<br>
-      Tap "Start" below to begin (not yet functional).
+      Tap "Start" below to begin.
     </div>
+    <video id="camera-video" autoplay playsinline muted></video>
+    <canvas id="freeze-canvas"></canvas>
     <div id="ready-banner">READY FOR NEXT</div>
   </div>
 
   <!-- ============ BUTTON BAR ============ -->
   <div id="button-bar">
-    <button class="action-btn" onclick="notReady('Start/Capture')">Start</button>
-    <button class="action-btn stop-btn" onclick="notReady('Stop')">Stop</button>
+    <button class="action-btn" id="start-capture-btn" onclick="handleStartCapture()">Start</button>
+    <button class="action-btn stop-btn" id="stop-btn" onclick="stopCamera()">Stop</button>
     <button class="action-btn secondary-btn" onclick="notReady('Undo Last Scan')">Undo</button>
     <button class="action-btn secondary-btn" onclick="notReady('Copy')">Copy</button>
     <button class="action-btn secondary-btn" id="btn-average" onclick="notReady('Average')">Average</button>
@@ -471,9 +503,12 @@
 
 <script>
   // ---------------------------------------------------------------
-  // ClassScan — Step 1.1 shell
-  // Layout + navigation only. No camera, no vision API, no scan logic.
-  // Every action button shows a "coming soon" toast for now.
+  // ClassScan — Step 1.2
+  // Adds: rear camera preview, Start->Capture/Stop flow (discrete
+  // pipeline only), freeze-frame on Capture, READY FOR NEXT banner,
+  // and the flashlight (torch) toggle.
+  // Still NOT implemented: QR decode, vision API calls, table logic,
+  // continuous sub-mode, roster, export. Those buttons still toast.
   // ---------------------------------------------------------------
 
   let toastTimer = null;
@@ -526,6 +561,183 @@
     }
 
     showToast('Mode switching logic (table clear/confirm) — coming soon');
+  }
+
+  // ---- Camera state (discrete sub-mode only, per Blueprint Section 6) ----
+  let mediaStream = null;
+  let cameraActive = false;
+  let torchOn = false;
+  let capturing = false;
+
+  const videoEl = document.getElementById('camera-video');
+  const canvasEl = document.getElementById('freeze-canvas');
+  const placeholderEl = document.getElementById('camera-placeholder');
+  const bannerEl = document.getElementById('ready-banner');
+  const startCaptureBtn = document.getElementById('start-capture-btn');
+  const torchToggleBtn = document.getElementById('torch-toggle');
+  const statusLineEl = document.getElementById('status-line');
+
+  function setStatus(msg) {
+    statusLineEl.textContent = msg;
+  }
+
+  // Single button handles both "Start" and "Capture" per Blueprint Section 6.
+  function handleStartCapture() {
+    if (!cameraActive) {
+      startCamera();
+    } else {
+      captureFrame();
+    }
+  }
+
+  async function startCamera() {
+    if (cameraActive) return;
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus('This browser does not support camera access. Please use Chrome.');
+      showToast('Camera not supported in this browser');
+      return;
+    }
+
+    setStatus('Requesting camera access…');
+
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+    } catch (err) {
+      if (err.name === 'OverconstrainedError' || err.name === 'ConstraintNotSatisfiedError') {
+        // Rear camera constraint couldn't be satisfied — fall back to any camera.
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        } catch (err2) {
+          handleCameraError(err2);
+          return;
+        }
+      } else {
+        handleCameraError(err);
+        return;
+      }
+    }
+
+    videoEl.srcObject = mediaStream;
+    videoEl.style.display = 'block';
+    placeholderEl.style.display = 'none';
+    canvasEl.style.display = 'none';
+    bannerEl.style.display = 'none';
+
+    cameraActive = true;
+    startCaptureBtn.textContent = 'Capture';
+    setStatus('Camera ready. Tap Capture to freeze a frame. (QR + AI analysis not connected yet.)');
+  }
+
+  function captureFrame() {
+    if (!cameraActive || capturing) return;
+    capturing = true;
+
+    const w = videoEl.videoWidth;
+    const h = videoEl.videoHeight;
+
+    if (!w || !h) {
+      // Video not ready yet — bail out gracefully.
+      capturing = false;
+      showToast('Camera still starting up — try again in a moment');
+      return;
+    }
+
+    canvasEl.width = w;
+    canvasEl.height = h;
+    const ctx = canvasEl.getContext('2d');
+    ctx.drawImage(videoEl, 0, 0, w, h);
+
+    // Freeze: show the captured still over the live feed.
+    canvasEl.style.display = 'block';
+    videoEl.style.display = 'none';
+    setStatus('Frame captured — confirming image. (This is where QR decode + AI analysis will run in a later step.)');
+
+    // Simulate the pipeline gap where QR decode + vision call will happen later.
+    setTimeout(() => {
+      canvasEl.style.display = 'none';
+      videoEl.style.display = 'block';
+      bannerEl.style.display = 'block';
+
+      setTimeout(() => {
+        bannerEl.style.display = 'none';
+        setStatus('Camera ready. Tap Capture for the next scan.');
+        capturing = false;
+      }, 1500);
+    }, 1000);
+  }
+
+  function stopCamera() {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(track => track.stop());
+    }
+    mediaStream = null;
+    cameraActive = false;
+    torchOn = false;
+    capturing = false;
+
+    videoEl.srcObject = null;
+    videoEl.style.display = 'none';
+    canvasEl.style.display = 'none';
+    bannerEl.style.display = 'none';
+    placeholderEl.style.display = 'block';
+
+    startCaptureBtn.textContent = 'Start';
+    torchToggleBtn.classList.remove('on');
+
+    setStatus('Camera stopped. Trial data is kept — tap Start to resume scanning.');
+  }
+
+  async function toggleTorch() {
+    if (!cameraActive) {
+      showToast('Start the camera first');
+      return;
+    }
+
+    const track = mediaStream.getVideoTracks()[0];
+    const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+
+    if (!capabilities.torch) {
+      showToast('Flashlight not supported on this device/browser');
+      return;
+    }
+
+    const nextState = !torchOn;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: nextState }] });
+      torchOn = nextState;
+      torchToggleBtn.classList.toggle('on', torchOn);
+      if (torchOn) {
+        showToast('Flashlight on — glare on laminated cards may worsen');
+      }
+    } catch (err) {
+      showToast('Could not toggle the flashlight');
+    }
+  }
+
+  function handleCameraError(err) {
+    let msg;
+    switch (err.name) {
+      case 'NotAllowedError':
+      case 'PermissionDeniedError':
+        msg = 'Camera permission denied. In Chrome, tap the lock icon next to the address bar → Permissions → allow Camera, then reload this page.';
+        break;
+      case 'NotFoundError':
+      case 'DevicesNotFoundError':
+        msg = 'No camera found on this device.';
+        break;
+      case 'NotReadableError':
+      case 'TrackStartError':
+        msg = 'The camera is already in use by another app. Close other camera apps and try again.';
+        break;
+      default:
+        msg = 'Camera error: ' + (err.message || err.name || 'unknown error') + '. Try reloading the page.';
+    }
+    setStatus(msg);
+    showToast('Camera error — see status message above');
   }
 
   // ---- Settings screen open/close ----
