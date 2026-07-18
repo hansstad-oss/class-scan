@@ -360,6 +360,7 @@
     border: 2px solid var(--border);
     border-radius: 10px;
     margin-bottom: 4px;
+    -webkit-text-security: disc;
   }
 
   .settings-checkbox-row {
@@ -500,7 +501,7 @@
   </div>
   <div id="settings-body">
     <label class="settings-label" for="api-key-input">Gemini API Key</label>
-    <input type="password" id="api-key-input" placeholder="Paste your Gemini API key here" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <input type="text" id="api-key-input" placeholder="Paste your Gemini API key here" autocomplete="off" autocapitalize="off" spellcheck="false">
     <div class="settings-help">
       Get a free key from Google AI Studio. This key lets ClassScan read your scanned cards/sheets.
       It is stored only in this browser — never uploaded anywhere else by this app.
