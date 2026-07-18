@@ -439,7 +439,7 @@
 
     <div id="toggle-row">
       <button class="toggle-btn" id="submode-toggle" onclick="notReady('Discrete/Continuous switch')">Discrete</button>
-      <button class="toggle-btn" id="ghost-toggle" onclick="notReady('Anonymous mode')">👻 Anonymous</button>
+      <button class="toggle-btn" id="ghost-toggle" onclick="toggleAnonymous()">👻 Anonymous</button>
       <button class="toggle-btn" id="torch-toggle" onclick="toggleTorch()">🔦 Flashlight</button>
     </div>
   </div>
@@ -468,10 +468,10 @@
     <button class="action-btn secondary-btn" id="btn-average" onclick="notReady('Average')">Average</button>
     <button class="action-btn secondary-btn" id="btn-tally" onclick="notReady('Tally')">Tally</button>
     <button class="action-btn secondary-btn" id="btn-chart" onclick="notReady('Chart')">Chart</button>
-    <button class="action-btn secondary-btn" onclick="notReady('Load List')">Load List</button>
-    <button class="action-btn secondary-btn" onclick="notReady('Clear List')">Clear List</button>
+    <button class="action-btn secondary-btn" onclick="handleLoadList()">Load List</button>
+    <button class="action-btn secondary-btn" onclick="handleClearList()">Clear List</button>
     <button class="action-btn secondary-btn" onclick="notReady('Link (export)')">Link</button>
-    <button class="action-btn secondary-btn" onclick="notReady('Reset')">Reset</button>
+    <button class="action-btn secondary-btn" onclick="handleReset()">Reset</button>
   </div>
 
   <!-- ============ RESULTS TABLE ============ -->
@@ -855,11 +855,24 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   }
 
   // ---------------------------------------------------------------
-  // RESULTS TABLE (Cards mode, front face, no roster yet — Section 7:
-  // "If no roster is loaded, rows are created directly from scans")
+  // RESULTS TABLE (Cards mode, front face)
+  // Section 7: "If no roster is loaded, rows are created directly from
+  // scans." Once a roster is loaded, the table shows the union of roster
+  // names and scanned names, color-coded red/green/yellow.
+  //
+  // SCOPE NOTE: Section 7 describes scanned rows sitting in a "newest
+  // first" block above unscanned roster rows — that ordering depends on
+  // the # column / newest-first sort system from table v2 (Phase C),
+  // which isn't built yet (this table still sorts alphabetically only,
+  // per Section 3.1). Implemented here: correct red/green/yellow status
+  // coloring, with every row — scanned or not — in one alphabetical
+  // list. The scanned-on-top block layout is deferred to Phase C.
   // ---------------------------------------------------------------
   let tableData = {}; // key: lowercased trimmed name -> row object
   let undoSnapshot = null; // single-level undo (Blueprint Section 8)
+  let roster = {}; // key: lowercased trimmed name -> { displayName, id }
+  let anonymousMode = false; // Cards-only, default OFF (Blueprint Section 8)
+  let anonymousMap = {}; // key: lowercased trimmed name -> stable 3-digit code
 
   function cloneTableData(data) {
     // Plain-data object of strings/booleans — a JSON round-trip is a safe,
@@ -886,53 +899,238 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     return '';
   }
 
+  function getAnonymousCode(key) {
+    if (anonymousMap[key]) return anonymousMap[key];
+    const used = new Set(Object.values(anonymousMap));
+    let code;
+    do {
+      code = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+    } while (used.has(code));
+    anonymousMap[key] = code;
+    return code;
+  }
+
+  function getAllRowKeys() {
+    const keys = new Set();
+    Object.keys(roster).forEach(k => keys.add(k));
+    Object.keys(tableData).forEach(k => keys.add(k));
+    return Array.from(keys);
+  }
+
+  // Row status per Blueprint Section 7: red = roster, no data; green =
+  // data received; yellow = scanned key not on roster. If no roster is
+  // loaded at all, every row is uncolored (matches pre-roster behavior).
+  function getRowStatus(key) {
+    const rosterLoaded = Object.keys(roster).length > 0;
+    if (!rosterLoaded) return 'none';
+    const inRoster = Object.prototype.hasOwnProperty.call(roster, key);
+    const hasData = Object.prototype.hasOwnProperty.call(tableData, key);
+    if (inRoster && hasData) return 'green';
+    if (inRoster && !hasData) return 'red';
+    if (!inRoster && hasData) return 'yellow';
+    return 'none';
+  }
+
+  function buildDisplayRow(key) {
+    const dataRow = tableData[key];
+    const rosterEntry = roster[key];
+    return {
+      key: key,
+      displayName: dataRow ? dataRow.displayName : (rosterEntry ? rosterEntry.displayName : key),
+      response: dataRow ? dataRow.response : '',
+      responseLowConf: dataRow ? dataRow.responseLowConf : false,
+      conditionBubble: dataRow ? dataRow.conditionBubble : '',
+      conditionText: dataRow ? dataRow.conditionText : '',
+      conditionManualValue: dataRow ? dataRow.conditionManualValue : null,
+      conditionLowConf: dataRow ? dataRow.conditionLowConf : false,
+      hasData: !!dataRow,
+      status: getRowStatus(key)
+    };
+  }
+
   function renderTable() {
-    const keys = Object.keys(tableData);
+    const allKeys = getAllRowKeys();
     const tbody = document.getElementById('table-body');
     const emptyState = document.getElementById('empty-state');
     const headerRow = document.getElementById('table-header-row');
 
-    if (keys.length === 0) {
+    if (allKeys.length === 0) {
       tbody.innerHTML = '';
       emptyState.style.display = 'block';
       return;
     }
     emptyState.style.display = 'none';
 
-    const anyCondition = keys.some(k => computeConditionDisplay(tableData[k]) !== '');
+    const rows = allKeys.map(buildDisplayRow);
+    const anyCondition = rows.some(r => computeConditionDisplay(r) !== '');
 
     headerRow.innerHTML = '<th>Name</th><th>Response</th>' + (anyCondition ? '<th>Condition</th>' : '');
 
-    const sortedKeys = keys.sort((a, b) =>
-      tableData[a].displayName.localeCompare(tableData[b].displayName, undefined, { sensitivity: 'base' })
-    );
+    rows.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }));
 
     tbody.innerHTML = '';
-    sortedKeys.forEach(k => {
-      const row = tableData[k];
+    rows.forEach(row => {
       const tr = document.createElement('tr');
+      if (row.status === 'red') tr.classList.add('row-red');
+      else if (row.status === 'green') tr.classList.add('row-green');
+      else if (row.status === 'yellow') tr.classList.add('row-yellow');
 
       const nameTd = document.createElement('td');
-      nameTd.textContent = row.displayName;
-      makeEditable(nameTd, k, 'name');
+      nameTd.textContent = anonymousMode ? getAnonymousCode(row.key) : row.displayName;
+      // Editing a placeholder (unscanned roster) row or an anonymized
+      // code has no sensible meaning — only editable once real data exists.
+      if (!anonymousMode && row.hasData) {
+        makeEditable(nameTd, row.key, 'name');
+      }
       tr.appendChild(nameTd);
 
       const responseTd = document.createElement('td');
       responseTd.textContent = row.response;
       if (row.responseLowConf) responseTd.classList.add('low-confidence');
-      makeEditable(responseTd, k, 'response');
+      if (row.hasData) makeEditable(responseTd, row.key, 'response');
       tr.appendChild(responseTd);
 
       if (anyCondition) {
         const conditionTd = document.createElement('td');
         conditionTd.textContent = computeConditionDisplay(row);
         if (row.conditionLowConf) conditionTd.classList.add('low-confidence');
-        makeEditable(conditionTd, k, 'condition');
+        if (row.hasData) makeEditable(conditionTd, row.key, 'condition');
         tr.appendChild(conditionTd);
       }
 
       tbody.appendChild(tr);
     });
+  }
+
+  // ---- Roster: Load List / Clear List (Blueprint Section 7) ----
+  function parseRosterPayload(qrText) {
+    const body = qrText.slice('ROSTER|'.length).trim();
+    if (!body) {
+      return { ok: false, message: 'Roster QR was empty.' };
+    }
+    const rawEntries = body.split(';').map(s => s.trim()).filter(s => s.length > 0);
+    const entries = [];
+    rawEntries.forEach(raw => {
+      const parts = raw.split(':');
+      const name = (parts[0] || '').trim();
+      const id = (parts[1] || '').trim(); // optional per entry
+      if (name) entries.push({ name: name, id: id });
+    });
+    if (entries.length === 0) {
+      return { ok: false, message: 'Roster QR had no valid student names.' };
+    }
+    return { ok: true, entries: entries };
+  }
+
+  function applyRoster(entries) {
+    // Loading a roster QR replaces the current roster with this one.
+    const newRoster = {};
+    entries.forEach(e => {
+      newRoster[e.name.toLowerCase()] = { displayName: e.name, id: e.id };
+    });
+    roster = newRoster;
+    renderTable();
+  }
+
+  function handleLoadList() {
+    if (!cameraActive) {
+      showToast('Start the camera first, then tap Load List');
+      return;
+    }
+    if (capturing) {
+      showToast('Still processing the last scan — try again in a moment');
+      return;
+    }
+    captureRosterFrame();
+  }
+
+  function captureRosterFrame() {
+    capturing = true;
+
+    const w = videoEl.videoWidth;
+    const h = videoEl.videoHeight;
+    if (!w || !h) {
+      capturing = false;
+      showToast('Camera still starting up — try again in a moment');
+      return;
+    }
+
+    canvasEl.width = w;
+    canvasEl.height = h;
+    const ctx = canvasEl.getContext('2d');
+    ctx.drawImage(videoEl, 0, 0, w, h);
+    canvasEl.style.display = 'block';
+    videoEl.style.display = 'none';
+    setStatus('Reading roster QR code…');
+
+    let qrText = null;
+    try {
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const qrResult = jsQR(imageData.data, imageData.width, imageData.height);
+      if (qrResult && qrResult.data && qrResult.data.trim()) {
+        qrText = qrResult.data.trim();
+      }
+    } catch (err) {
+      qrText = null;
+    }
+
+    if (!qrText) {
+      setStatus('No QR code found — hold steady and try again.');
+      showToast('No QR code detected');
+      resumeLiveView(false);
+      return;
+    }
+
+    if (!qrText.startsWith('ROSTER|')) {
+      setStatus('That QR code is not a roster list.');
+      showToast('Not a roster QR code');
+      resumeLiveView(false);
+      return;
+    }
+
+    const parsed = parseRosterPayload(qrText);
+    if (!parsed.ok) {
+      setStatus(parsed.message);
+      showToast(parsed.message);
+      resumeLiveView(false);
+      return;
+    }
+
+    applyRoster(parsed.entries);
+    setStatus('Roster loaded: ' + parsed.entries.length + ' student(s).');
+    showToast('Roster loaded');
+    resumeLiveView(true);
+  }
+
+  function handleClearList() {
+    roster = {};
+    renderTable();
+    showToast('Roster cleared');
+    setStatus('Roster cleared. Scanned data is unaffected.');
+  }
+
+  // ---- Anonymous 👻 (Cards-only, Blueprint Section 8) ----
+  function toggleAnonymous() {
+    anonymousMode = !anonymousMode;
+    document.getElementById('ghost-toggle').classList.toggle('on', anonymousMode);
+    renderTable();
+    showToast(anonymousMode ? 'Anonymous mode ON — names hidden' : 'Anonymous mode OFF');
+  }
+
+  // ---- Reset (Blueprint Section 8: "confirm → clears table; roster
+  // and tier setting survive") ----
+  function handleReset() {
+    const confirmed = window.confirm('Reset will clear all scanned data from this trial and turn off Anonymous mode.\n\nYour roster and API key settings will NOT be affected.\n\nContinue?');
+    if (!confirmed) return;
+    tableData = {};
+    undoSnapshot = null;
+    anonymousMode = false;
+    anonymousMap = {};
+    const ghostToggle = document.getElementById('ghost-toggle');
+    if (ghostToggle) ghostToggle.classList.remove('on');
+    renderTable();
+    showToast('Table reset');
+    setStatus('Table reset. Roster and API key settings kept.');
   }
 
   // ---- Tap-to-edit (Blueprint Section 8) ----
@@ -1189,7 +1387,15 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       const imageData = ctx.getImageData(0, 0, w, h);
       const qrResult = jsQR(imageData.data, imageData.width, imageData.height);
       if (qrResult && qrResult.data && qrResult.data.trim()) {
-        qrName = qrResult.data.trim();
+        const decoded = qrResult.data.trim();
+        if (decoded.startsWith('ROSTER|')) {
+          // A roster QR photographed with the main Capture button, not
+          // Load List — don't use it as a card name override.
+          qrName = null;
+          showToast('That\'s a roster QR — use Load List instead of Capture');
+        } else {
+          qrName = decoded;
+        }
       }
     } catch (err) {
       qrName = null; // QR decode failure just means no override, not fatal.
@@ -1340,6 +1546,11 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     if (event.persisted) {
       tableData = {};
       undoSnapshot = null;
+      roster = {}; // Section 7: roster persists "until Clear List or tab close"
+      anonymousMode = false; // Section 8: "resets OFF on close"
+      anonymousMap = {};
+      const ghostToggle = document.getElementById('ghost-toggle');
+      if (ghostToggle) ghostToggle.classList.remove('on');
       if (cameraActive) {
         stopCamera();
       }
