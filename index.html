@@ -602,11 +602,13 @@
   // can be swapped later by changing VisionEngine.active.
   // ---------------------------------------------------------------
 
-  // Verified against https://ai.google.dev/gemini-api/docs (accessed 2026-07-17):
-  // Gemini 3.5 Flash is Google's current GA, recommended Flash-class model,
-  // called via the v1beta REST endpoint below. If Google renames/retires
-  // this model later, only GEMINI_MODEL needs to change.
-  const GEMINI_MODEL = 'gemini-3.5-flash';
+  // gemini-2.5-flash (Blueprint Section 2) — chosen over the newer
+  // gemini-3.5-flash because 3.5's free-tier daily quota (20 req/day,
+  // confirmed via a live 429 on 2026-07-18) is too low for classroom use;
+  // 2.5-flash reports a much higher free-tier daily quota. Called via the
+  // v1beta REST endpoint below. If Google renames/retires this model
+  // later, only GEMINI_MODEL needs to change.
+  const GEMINI_MODEL = 'gemini-2.5-flash';
   const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
   function tryParseJSON(text) {
@@ -741,7 +743,7 @@
   // fire less than 4 seconds apart, regardless of how fast the
   // teacher taps Capture.
   // ---------------------------------------------------------------
-  const VISION_THROTTLE_MS = 4000;
+  const VISION_THROTTLE_MS = 6000;
   let lastVisionCallStart = 0;
   let visionQueueTail = Promise.resolve();
 
