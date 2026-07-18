@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ClassScan</title>
+<style>
+  :root {
+    --blue: #1a73e8;
+    --blue-dark: #0d47a1;
+    --green: #1e8e3e;
+    --red: #d93025;
+    --yellow: #f9ab00;
+    --grey: #9aa0a6;
+    --bg: #f5f5f7;
+    --card-bg: #ffffff;
+    --text: #202124;
+    --border: #dadce0;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 18px;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  /* ---------- TOP BAR ---------- */
+  #top-bar {
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+
+  #mode-selector {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  .mode-btn {
+    flex: 1;
+    padding: 12px 4px;
+    font-size: 16px;
+    font-weight: 600;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    background: var(--card-bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .mode-btn.active {
+    background: var(--blue);
+    border-color: var(--blue);
+    color: #fff;
+  }
+
+  #trial-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  #trial-title {
+    flex: 1;
+    font-size: 15px;
+    color: var(--grey);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #settings-gear {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 4px 8px;
+    line-height: 1;
+  }
+
+  #toggle-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .toggle-btn {
+    padding: 10px 14px;
+    font-size: 15px;
+    border: 2px solid var(--border);
+    border-radius: 20px;
+    background: var(--card-bg);
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .toggle-btn.on {
+    background: var(--green);
+    border-color: var(--green);
+    color: #fff;
+  }
+
+  .toggle-btn.hidden-toggle {
+    display: none;
+  }
+
+  /* ---------- MIDDLE / CAMERA AREA ---------- */
+  #middle-area {
+    background: #000;
+    color: #fff;
+    min-height: 220px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    padding: 16px;
+    text-align: center;
+  }
+
+  #camera-placeholder {
+    font-size: 16px;
+    color: #bbb;
+    line-height: 1.5;
+  }
+
+  #ready-banner {
+    display: none;
+    background: var(--green);
+    color: #fff;
+    font-size: 26px;
+    font-weight: 700;
+    padding: 20px;
+    border-radius: 12px;
+  }
+
+  #status-line {
+    background: #fff8e1;
+    border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    font-size: 14px;
+    color: #5f6368;
+    min-height: 20px;
+  }
+
+  /* ---------- BUTTON BAR ---------- */
+  #button-bar {
+    background: var(--card-bg);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+  }
+
+  .action-btn {
+    flex: 1 1 30%;
+    min-width: 90px;
+    min-height: 52px;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 10px;
+    background: var(--blue);
+    color: #fff;
+    cursor: pointer;
+    padding: 10px 6px;
+  }
+
+  .action-btn:active {
+    filter: brightness(0.9);
+  }
+
+  .action-btn.disabled-btn {
+    background: var(--grey);
+    color: #eee;
+    cursor: not-allowed;
+  }
+
+  .action-btn.stop-btn { background: var(--red); }
+  .action-btn.secondary-btn { background: #5f6368; }
+
+  /* ---------- TABLE ---------- */
+  #table-wrap {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background: var(--card-bg);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15px;
+  }
+
+  thead th {
+    position: sticky;
+    top: 0;
+    background: var(--blue-dark);
+    color: #fff;
+    padding: 10px 8px;
+    text-align: left;
+    z-index: 5;
+    white-space: nowrap;
+  }
+
+  tbody td {
+    padding: 12px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  tbody tr.row-red td:first-child { border-left: 6px solid var(--red); }
+  tbody tr.row-green td:first-child { border-left: 6px solid var(--green); }
+  tbody tr.row-yellow td:first-child { border-left: 6px solid var(--yellow); }
+
+  .low-confidence {
+    background: #fff3cd;
+    position: relative;
+  }
+
+  .low-confidence::after {
+    content: "⚠";
+    margin-left: 6px;
+    color: #b26a00;
+  }
+
+  #empty-state {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--grey);
+    font-size: 15px;
+  }
+
+  /* ---------- SETTINGS SCREEN ---------- */
+  #settings-screen {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    z-index: 100;
+    overflow-y: auto;
+  }
+
+  #settings-header {
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: sticky;
+    top: 0;
+  }
+
+  #settings-header h2 {
+    margin: 0;
+    font-size: 20px;
+    flex: 1;
+  }
+
+  #settings-back {
+    background: none;
+    border: none;
+    font-size: 26px;
+    cursor: pointer;
+  }
+
+  #settings-body {
+    padding: 16px;
+  }
+
+  .settings-label {
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  .settings-help {
+    font-size: 14px;
+    color: var(--grey);
+    margin-top: 4px;
+    margin-bottom: 16px;
+    line-height: 1.4;
+  }
+
+  #api-key-input {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 4px;
+  }
+
+  .settings-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 16px 0;
+  }
+
+  .settings-checkbox-row input {
+    width: 22px;
+    height: 22px;
+  }
+
+  #save-key-btn {
+    width: 100%;
+    padding: 16px;
+    font-size: 17px;
+    font-weight: 700;
+    background: var(--blue);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+
+  #key-status {
+    margin-top: 12px;
+    font-size: 14px;
+    color: var(--green);
+    min-height: 18px;
+  }
+
+  /* ---------- TOAST ---------- */
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%) translateY(20px);
+    background: #202124;
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 24px;
+    font-size: 15px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 200;
+    max-width: 90%;
+    text-align: center;
+  }
+
+  #toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ TOP BAR ============ -->
+  <div id="top-bar">
+    <div id="mode-selector">
+      <button class="mode-btn active" data-mode="cards" onclick="selectMode('cards')">Cards</button>
+      <button class="mode-btn" data-mode="quiz" onclick="selectMode('quiz')">Quiz</button>
+      <button class="mode-btn" data-mode="participation" onclick="selectMode('participation')">Participation</button>
+    </div>
+
+    <div id="trial-title-row">
+      <div id="trial-title">No trial linked — data stays local</div>
+      <button id="settings-gear" onclick="openSettings()" title="Settings">⚙️</button>
+    </div>
+
+    <div id="toggle-row">
+      <button class="toggle-btn" id="submode-toggle" onclick="notReady('Discrete/Continuous switch')">Discrete</button>
+      <button class="toggle-btn" id="ghost-toggle" onclick="notReady('Anonymous mode')">👻 Anonymous</button>
+      <button class="toggle-btn" id="torch-toggle" onclick="notReady('Flashlight')">🔦 Flashlight</button>
+    </div>
+  </div>
+
+  <!-- ============ STATUS LINE ============ -->
+  <div id="status-line">Ready. (No camera or API connected yet — this is the layout shell.)</div>
+
+  <!-- ============ MIDDLE / CAMERA AREA ============ -->
+  <div id="middle-area">
+    <div id="camera-placeholder">
+      📷<br>
+      Camera preview will appear here.<br>
+      Tap "Start" below to begin (not yet functional).
+    </div>
+    <div id="ready-banner">READY FOR NEXT</div>
+  </div>
+
+  <!-- ============ BUTTON BAR ============ -->
+  <div id="button-bar">
+    <button class="action-btn" onclick="notReady('Start/Capture')">Start</button>
+    <button class="action-btn stop-btn" onclick="notReady('Stop')">Stop</button>
+    <button class="action-btn secondary-btn" onclick="notReady('Undo Last Scan')">Undo</button>
+    <button class="action-btn secondary-btn" onclick="notReady('Copy')">Copy</button>
+    <button class="action-btn secondary-btn" id="btn-average" onclick="notReady('Average')">Average</button>
+    <button class="action-btn secondary-btn" id="btn-tally" onclick="notReady('Tally')">Tally</button>
+    <button class="action-btn secondary-btn" id="btn-chart" onclick="notReady('Chart')">Chart</button>
+    <button class="action-btn secondary-btn" onclick="notReady('Load List')">Load List</button>
+    <button class="action-btn secondary-btn" onclick="notReady('Clear List')">Clear List</button>
+    <button class="action-btn secondary-btn" onclick="notReady('Link (export)')">Link</button>
+    <button class="action-btn secondary-btn" onclick="notReady('Reset')">Reset</button>
+  </div>
+
+  <!-- ============ RESULTS TABLE ============ -->
+  <div id="table-wrap">
+    <table id="results-table">
+      <thead>
+        <tr id="table-header-row">
+          <th>Name</th>
+          <th>Response</th>
+          <th>Condition</th>
+        </tr>
+      </thead>
+      <tbody id="table-body">
+        <!-- rows will be inserted here in a later step -->
+      </tbody>
+    </table>
+    <div id="empty-state">No data yet. Load a roster or start scanning to see results here.</div>
+  </div>
+
+</div>
+
+<!-- ============ SETTINGS SCREEN ============ -->
+<div id="settings-screen">
+  <div id="settings-header">
+    <button id="settings-back" onclick="closeSettings()">←</button>
+    <h2>Settings</h2>
+  </div>
+  <div id="settings-body">
+    <label class="settings-label" for="api-key-input">Gemini API Key</label>
+    <input type="password" id="api-key-input" placeholder="Paste your Gemini API key here" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <div class="settings-help">
+      Get a free key from Google AI Studio. This key lets ClassScan read your scanned cards/sheets.
+      It is stored only in this browser — never uploaded anywhere else by this app.
+    </div>
+
+    <div class="settings-checkbox-row">
+      <input type="checkbox" id="remember-key-checkbox">
+      <label for="remember-key-checkbox">Remember this key on this device</label>
+    </div>
+
+    <button id="save-key-btn" onclick="notReady('Save API Key')">Save Key</button>
+    <div id="key-status"></div>
+  </div>
+</div>
+
+<!-- ============ TOAST ============ -->
+<div id="toast"></div>
+
+<script>
+  // ---------------------------------------------------------------
+  // ClassScan — Step 1.1 shell
+  // Layout + navigation only. No camera, no vision API, no scan logic.
+  // Every action button shows a "coming soon" toast for now.
+  // ---------------------------------------------------------------
+
+  let toastTimer = null;
+
+  function showToast(msg) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toast.classList.remove('show');
+    }, 1800);
+  }
+
+  function notReady(featureName) {
+    showToast(featureName + ' — coming soon');
+  }
+
+  // ---- Mode selector (visual only in this step) ----
+  function selectMode(mode) {
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+
+    // Ghost toggle only exists in Cards mode (per Blueprint Section 8)
+    const ghostToggle = document.getElementById('ghost-toggle');
+    if (mode === 'cards') {
+      ghostToggle.classList.remove('hidden-toggle');
+    } else {
+      ghostToggle.classList.add('hidden-toggle');
+    }
+
+    // Average/Tally/Chart availability varies by mode (visual placeholder only — no logic yet)
+    const avgBtn = document.getElementById('btn-average');
+    const tallyBtn = document.getElementById('btn-tally');
+    const chartBtn = document.getElementById('btn-chart');
+
+    if (mode === 'quiz') {
+      avgBtn.classList.add('disabled-btn');
+      tallyBtn.classList.add('disabled-btn');
+      chartBtn.classList.add('disabled-btn');
+    } else if (mode === 'participation') {
+      avgBtn.classList.add('disabled-btn');
+      tallyBtn.classList.remove('disabled-btn');
+      chartBtn.classList.remove('disabled-btn');
+    } else {
+      avgBtn.classList.remove('disabled-btn');
+      tallyBtn.classList.remove('disabled-btn');
+      chartBtn.classList.remove('disabled-btn');
+    }
+
+    showToast('Mode switching logic (table clear/confirm) — coming soon');
+  }
+
+  // ---- Settings screen open/close ----
+  function openSettings() {
+    document.getElementById('settings-screen').style.display = 'block';
+  }
+
+  function closeSettings() {
+    document.getElementById('settings-screen').style.display = 'none';
+  }
+</script>
+
+</body>
+</html>
