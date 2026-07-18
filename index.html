@@ -261,9 +261,9 @@
     border-bottom: 1px solid var(--border);
   }
 
-  tbody tr.row-red td:first-child { border-left: 6px solid var(--red); }
-  tbody tr.row-green td:first-child { border-left: 6px solid var(--green); }
-  tbody tr.row-yellow td:first-child { border-left: 6px solid var(--yellow); }
+  tbody tr.row-red td:first-child { background-color: rgba(217, 48, 37, 0.18); }
+  tbody tr.row-green td:first-child { background-color: rgba(30, 142, 62, 0.18); }
+  tbody tr.row-yellow td:first-child { background-color: rgba(249, 171, 0, 0.28); }
 
   .low-confidence {
     background: #fff3cd;
@@ -1413,6 +1413,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 
     // Local QR pass (jsQR) — decodes at most one QR per photo in this step.
     let qrName = null;
+    let rosterQrDetected = false;
     if (typeof jsQR !== 'function') {
       showToast('QR library failed to load — continuing without QR name-match');
     } else {
@@ -1423,9 +1424,10 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
           const decoded = qrResult.data.trim();
           if (decoded.startsWith('ROSTER|')) {
             // A roster QR photographed with the main Capture button, not
-            // Load List — don't use it as a card name override.
-            qrName = null;
-            showToast('That\'s a roster QR — use Load List instead of Capture');
+            // Load List. Stop here entirely — don't call vision on a QR
+            // code photo, which would only fail with a confusing "No card
+            // detected" message a moment later.
+            rosterQrDetected = true;
           } else {
             qrName = decoded;
           }
@@ -1433,6 +1435,13 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       } catch (err) {
         qrName = null; // QR decode failure just means no override, not fatal.
       }
+    }
+
+    if (rosterQrDetected) {
+      setStatus('That\'s a roster QR — use Load List instead of Capture.');
+      showToast('Use Load List for a roster QR');
+      resumeLiveView(false);
+      return;
     }
 
     if (!apiKey) {
