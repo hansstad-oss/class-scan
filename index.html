@@ -276,6 +276,24 @@
     color: #b26a00;
   }
 
+  .editable-cell {
+    cursor: pointer;
+  }
+
+  .editable-cell:active {
+    background: #e8f0fe;
+  }
+
+  .cell-edit-input {
+    width: 100%;
+    font-size: 15px;
+    font-family: inherit;
+    padding: 6px 8px;
+    border: 2px solid var(--blue);
+    border-radius: 6px;
+    box-sizing: border-box;
+  }
+
   #empty-state {
     padding: 40px 20px;
     text-align: center;
@@ -444,7 +462,7 @@
   <div id="button-bar">
     <button class="action-btn" id="start-capture-btn" onclick="handleStartCapture()">Start</button>
     <button class="action-btn stop-btn" id="stop-btn" onclick="stopCamera()">Stop</button>
-    <button class="action-btn secondary-btn" onclick="notReady('Undo Last Scan')">Undo</button>
+    <button class="action-btn secondary-btn" onclick="handleUndo()">Undo</button>
     <button class="action-btn secondary-btn" onclick="notReady('Copy')">Copy</button>
     <button class="action-btn secondary-btn" id="btn-average" onclick="notReady('Average')">Average</button>
     <button class="action-btn secondary-btn" id="btn-tally" onclick="notReady('Tally')">Tally</button>
@@ -835,8 +853,27 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // "If no roster is loaded, rows are created directly from scans")
   // ---------------------------------------------------------------
   let tableData = {}; // key: lowercased trimmed name -> row object
+  let undoSnapshot = null; // single-level undo (Blueprint Section 8)
 
-  function computeConditionDisplay(bubble, text) {
+  function cloneTableData(data) {
+    // Plain-data object of strings/booleans — a JSON round-trip is a safe,
+    // simple deep clone here.
+    return JSON.parse(JSON.stringify(data));
+  }
+
+  // Row shape:
+  // {
+  //   displayName, response, responseLowConf,
+  //   conditionBubble, conditionText,      // as read from the last scan
+  //   conditionManualValue,                // non-null once hand-edited; overrides bubble/text display
+  //   conditionLowConf
+  // }
+  function computeConditionDisplay(row) {
+    if (row.conditionManualValue !== null && row.conditionManualValue !== undefined) {
+      return row.conditionManualValue;
+    }
+    const bubble = row.conditionBubble;
+    const text = row.conditionText;
     if (bubble && text) return bubble + ' — ' + text;
     if (bubble) return bubble;
     if (text) return text;
@@ -856,7 +893,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     }
     emptyState.style.display = 'none';
 
-    const anyCondition = keys.some(k => computeConditionDisplay(tableData[k].conditionBubble, tableData[k].conditionText) !== '');
+    const anyCondition = keys.some(k => computeConditionDisplay(tableData[k]) !== '');
 
     headerRow.innerHTML = '<th>Name</th><th>Response</th>' + (anyCondition ? '<th>Condition</th>' : '');
 
@@ -871,22 +908,123 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 
       const nameTd = document.createElement('td');
       nameTd.textContent = row.displayName;
+      makeEditable(nameTd, k, 'name');
       tr.appendChild(nameTd);
 
       const responseTd = document.createElement('td');
       responseTd.textContent = row.response;
-      if (row.lowConfidence) responseTd.classList.add('low-confidence');
+      if (row.responseLowConf) responseTd.classList.add('low-confidence');
+      makeEditable(responseTd, k, 'response');
       tr.appendChild(responseTd);
 
       if (anyCondition) {
         const conditionTd = document.createElement('td');
-        conditionTd.textContent = computeConditionDisplay(row.conditionBubble, row.conditionText);
-        if (row.lowConfidence) conditionTd.classList.add('low-confidence');
+        conditionTd.textContent = computeConditionDisplay(row);
+        if (row.conditionLowConf) conditionTd.classList.add('low-confidence');
+        makeEditable(conditionTd, k, 'condition');
         tr.appendChild(conditionTd);
       }
 
       tbody.appendChild(tr);
     });
+  }
+
+  // ---- Tap-to-edit (Blueprint Section 8) ----
+  function makeEditable(td, rowKey, fieldType) {
+    td.classList.add('editable-cell');
+    td.addEventListener('click', () => startCellEdit(td, rowKey, fieldType));
+  }
+
+  function startCellEdit(td, rowKey, fieldType) {
+    if (td.querySelector('input')) return; // already editing this cell
+
+    const row = tableData[rowKey];
+    if (!row) return; // row disappeared (e.g. an Undo happened) — ignore stale click
+
+    let currentValue;
+    if (fieldType === 'name') currentValue = row.displayName;
+    else if (fieldType === 'response') currentValue = row.response;
+    else currentValue = computeConditionDisplay(row);
+
+    td.textContent = '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'cell-edit-input';
+    input.value = currentValue;
+    td.appendChild(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+
+    function commit() {
+      if (settled) return;
+      settled = true;
+      finishCellEdit(rowKey, fieldType, input.value);
+    }
+
+    function cancel() {
+      if (settled) return;
+      settled = true;
+      renderTable(); // simplest way to restore the original cell cleanly
+    }
+
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur(); // triggers commit via the blur handler above
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    });
+  }
+
+  function finishCellEdit(rowKey, fieldType, rawValue) {
+    const row = tableData[rowKey];
+    if (!row) { renderTable(); return; }
+
+    const value = rawValue.trim();
+
+    if (fieldType === 'name' && !value) {
+      showToast('Name cannot be blank');
+      renderTable();
+      return;
+    }
+
+    // Manual edits are treated like scans for overwrite/undo purposes
+    // (Blueprint Section 8) — snapshot before applying the change.
+    undoSnapshot = cloneTableData(tableData);
+
+    if (fieldType === 'name') {
+      const newKey = value.toLowerCase();
+      row.displayName = value;
+      if (newKey !== rowKey) {
+        delete tableData[rowKey];
+        tableData[newKey] = row;
+      }
+    } else if (fieldType === 'response') {
+      row.response = value.slice(0, 10);
+      row.responseLowConf = false; // editing clears that cell's low-confidence flag
+    } else if (fieldType === 'condition') {
+      row.conditionManualValue = value; // '' is a valid, explicit "cleared" value
+      row.conditionLowConf = false;
+    }
+
+    renderTable();
+  }
+
+  // ---- Undo Last Scan (single-level, Blueprint Section 8) ----
+  function handleUndo() {
+    if (undoSnapshot === null) {
+      showToast('Nothing to undo');
+      return;
+    }
+    tableData = undoSnapshot;
+    undoSnapshot = null;
+    renderTable();
+    showToast('Undo complete');
   }
 
   function applyVisionResult(result, qrName) {
@@ -896,6 +1034,8 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       showToast('No card detected in that photo — try again');
       return;
     }
+
+    undoSnapshot = cloneTableData(tableData);
 
     const singleCard = entries.length === 1;
 
@@ -914,13 +1054,18 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 
       const fields = entry.fields || {};
       const rowKey = displayName.toLowerCase();
+      const isLowConf = entry.confidence === 'low';
 
+      // A rescan of the same key OVERWRITES the previous row entirely
+      // (Blueprint Section 4), including clearing any prior manual edit.
       tableData[rowKey] = {
         displayName: displayName,
         response: (fields.response || '').toString().slice(0, 10),
+        responseLowConf: isLowConf,
         conditionBubble: (fields.conditionBubble || '').toString().slice(0, 1).toUpperCase(),
         conditionText: (fields.conditionText || '').toString().slice(0, 6),
-        lowConfidence: entry.confidence === 'low'
+        conditionManualValue: null,
+        conditionLowConf: isLowConf
       };
     });
 
