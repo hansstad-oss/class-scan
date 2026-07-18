@@ -1041,14 +1041,28 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       showToast('Still processing the last scan — try again in a moment');
       return;
     }
-    captureRosterFrame();
+    if (typeof jsQR !== 'function') {
+      setStatus('QR scanning library failed to load — check your internet connection and reload the page.');
+      showToast('QR library failed to load');
+      return;
+    }
+    capturing = true;
+    setStatus('Reading roster QR code…');
+    attemptRosterScan(0);
   }
 
-  function captureRosterFrame() {
-    capturing = true;
+  // A single frozen snapshot can be soft/blurry if focus hasn't settled —
+  // unlike a phone's native camera, which continuously scans many frames
+  // and uses whichever one is sharp. This retries across a short burst of
+  // FRESH frames (video stays live the whole time) instead of judging QR
+  // presence from one instant.
+  const ROSTER_SCAN_MAX_ATTEMPTS = 10;
+  const ROSTER_SCAN_RETRY_DELAY_MS = 250;
 
+  function attemptRosterScan(attemptNumber) {
     const w = videoEl.videoWidth;
     const h = videoEl.videoHeight;
+
     if (!w || !h) {
       capturing = false;
       showToast('Camera still starting up — try again in a moment');
@@ -1058,18 +1072,9 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     canvasEl.width = w;
     canvasEl.height = h;
     const ctx = canvasEl.getContext('2d');
-    ctx.drawImage(videoEl, 0, 0, w, h);
-    canvasEl.style.display = 'block';
-    videoEl.style.display = 'none';
-    setStatus('Reading roster QR code…');
+    ctx.drawImage(videoEl, 0, 0, w, h); // video stays visible/live — each attempt grabs a genuinely fresh frame
 
     let qrText = null;
-    if (typeof jsQR !== 'function') {
-      setStatus('QR scanning library failed to load — check your internet connection and reload the page.');
-      showToast('QR library failed to load');
-      resumeLiveView(false);
-      return;
-    }
     try {
       const imageData = ctx.getImageData(0, 0, w, h);
       const qrResult = jsQR(imageData.data, imageData.width, imageData.height);
@@ -1080,17 +1085,27 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       qrText = null;
     }
 
-    if (!qrText) {
-      setStatus('No QR code found — hold steady and try again.');
-      showToast('No QR code detected');
-      resumeLiveView(false);
+    if (qrText) {
+      finishRosterScan(qrText);
       return;
     }
 
+    if (attemptNumber < ROSTER_SCAN_MAX_ATTEMPTS - 1) {
+      setStatus('Reading roster QR code… (try ' + (attemptNumber + 2) + ' of ' + ROSTER_SCAN_MAX_ATTEMPTS + ')');
+      setTimeout(() => attemptRosterScan(attemptNumber + 1), ROSTER_SCAN_RETRY_DELAY_MS);
+      return;
+    }
+
+    setStatus('No QR code found after several tries — hold steady, keep it in frame, and try again.');
+    showToast('No QR code detected');
+    capturing = false;
+  }
+
+  function finishRosterScan(qrText) {
     if (!qrText.startsWith('ROSTER|')) {
       setStatus('That QR code is not a roster list.');
       showToast('Not a roster QR code');
-      resumeLiveView(false);
+      capturing = false;
       return;
     }
 
@@ -1098,14 +1113,23 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     if (!parsed.ok) {
       setStatus(parsed.message);
       showToast(parsed.message);
-      resumeLiveView(false);
+      capturing = false;
       return;
     }
 
     applyRoster(parsed.entries);
     setStatus('Roster loaded: ' + parsed.entries.length + ' student(s).');
     showToast('Roster loaded');
-    resumeLiveView(true);
+
+    // Brief success confirmation, consistent with the main Capture flow.
+    bannerEl.style.display = 'block';
+    setTimeout(() => {
+      bannerEl.style.display = 'none';
+      if (cameraActive) {
+        setStatus('Camera ready. Tap Capture for the next scan.');
+      }
+      capturing = false;
+    }, 1500);
   }
 
   function handleClearList() {
