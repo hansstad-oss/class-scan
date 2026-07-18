@@ -786,19 +786,19 @@ RULES:
 - Printed template ink is blue or green. Student marks and handwriting are BLACK. Only read BLACK marks/handwriting as student answers — ignore the printed blue/green template lines and boxes themselves.
 - Ignore faded, smudged, or off-color marks that look like erased or prior answers.
 - Ignore any handwriting outside the designated name/condition/response boxes.
-- If a field is unreadable or ambiguous, return your best guess and mark that card's confidence as "low". If you truly cannot make any guess for a field, return an empty string for it.
+- If a field is unreadable or ambiguous, return your best guess and mark THAT field's confidence as "low". Rate each field independently — uncertainty in one field must not lower the confidence of any other field. If you truly cannot make any guess for a field, return an empty string for it.
 - Never invent data that is not visibly present on the card.
-- If more than one condition bubble (A-D) appears marked on the same card, mark that card's confidence as "low" and still report your best guess (or empty string if there is no reasonable guess).
+- If more than one condition bubble (A-D) appears marked on the same card, mark conditionBubble's confidence as "low" and still report your best guess (or empty string if there is no reasonable guess).
 
 FOR EACH CARD, REPORT:
 - "key": the printed student name text near the QR code (best-effort reading only — do not guess a name that isn't printed there).
 - "fields.response": the content of the large response box, max 10 characters.
 - "fields.conditionBubble": which condition bubble is marked — one of "A", "B", "C", "D", or "" if none marked.
 - "fields.conditionText": the content of the small condition text box, max 6 characters, or "" if empty.
-- "confidence": "high" or "low" for the card as a whole.
+- "confidence": an object rating EACH field independently, "high" or "low": {"response":"high|low","conditionBubble":"high|low","conditionText":"high|low"}.
 
 Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly this shape:
-{"entries":[{"key":"<name>","fields":{"response":"<text>","conditionBubble":"<A|B|C|D|>","conditionText":"<text>"},"confidence":"high|low"}],"warnings":["<short warning strings, or an empty array>"]}`;
+{"entries":[{"key":"<name>","fields":{"response":"<text>","conditionBubble":"<A|B|C|D|>","conditionText":"<text>"},"confidence":{"response":"high|low","conditionBubble":"high|low","conditionText":"high|low"}}],"warnings":["<short warning strings, or an empty array>"]}`;
 
   // ---------------------------------------------------------------
   // API KEY / SETTINGS WIRING (Blueprint Section 2)
@@ -1058,19 +1058,27 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       }
 
       const fields = entry.fields || {};
+      const confidence = entry.confidence || {};
       const rowKey = displayName.toLowerCase();
-      const isLowConf = entry.confidence === 'low';
+
+      // Per-field confidence (Blueprint Section 5 canon) — each cell's flag
+      // reflects only that field's own uncertainty, not the whole card's.
+      // This is what makes a confident rescan cleanly clear flags: the new
+      // row object is built fresh from this scan's own per-field ratings,
+      // with no leftover state from the previous scan.
+      const responseLowConf = confidence.response === 'low';
+      const conditionLowConf = (confidence.conditionBubble === 'low') || (confidence.conditionText === 'low');
 
       // A rescan of the same key OVERWRITES the previous row entirely
       // (Blueprint Section 4), including clearing any prior manual edit.
       tableData[rowKey] = {
         displayName: displayName,
         response: (fields.response || '').toString().slice(0, 10),
-        responseLowConf: isLowConf,
+        responseLowConf: responseLowConf,
         conditionBubble: (fields.conditionBubble || '').toString().slice(0, 1).toUpperCase(),
         conditionText: (fields.conditionText || '').toString().slice(0, 6),
         conditionManualValue: null,
-        conditionLowConf: isLowConf
+        conditionLowConf: conditionLowConf
       };
     });
 
@@ -1314,6 +1322,30 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 
   // ---- Init ----
   loadSavedApiKey();
+
+  // ---------------------------------------------------------------
+  // SESSION ISOLATION (Blueprint Section 4)
+  // A genuine page reload already starts clean — tableData/undoSnapshot
+  // are freshly initialized above. The actual leak: mobile Chrome (and
+  // PWAs generally) often don't do a real reload when a tab/app is
+  // "closed" and reopened — they restore the page from the back/forward
+  // cache (bfcache), resuming the exact same in-memory JS state instead
+  // of re-running this script. That's how a previous session's table
+  // data can survive what looks, to the teacher, like closing the app.
+  // The 'pageshow' event's persisted flag is the standard signal that a
+  // bfcache restore (not a fresh load) just happened — so this is a
+  // detectable, fixable trigger, not a guess.
+  window.addEventListener('pageshow', function (event) {
+    if (event.persisted) {
+      tableData = {};
+      undoSnapshot = null;
+      if (cameraActive) {
+        stopCamera();
+      }
+      renderTable();
+      setStatus('Ready. Tap Start to open the camera. (New session — previous scans cleared.)');
+    }
+  });
 </script>
 
 </body>
