@@ -404,6 +404,70 @@
     margin-bottom: 20px;
   }
 
+  /* ---------- RATE-LIMIT DIALOG (Blueprint Section 2) ---------- */
+  #rate-limit-dialog {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 300;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #rate-limit-dialog.show {
+    display: flex;
+  }
+
+  #rate-limit-dialog-inner {
+    background: #ffffff;
+    width: 88%;
+    max-width: 360px;
+    border-radius: 16px;
+    padding: 24px 20px;
+    text-align: center;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+  }
+
+  #rate-limit-dialog-inner h3 {
+    margin: 0 0 12px 0;
+    font-size: 20px;
+    color: var(--text);
+  }
+
+  #rate-limit-dialog-inner p {
+    margin: 0 0 20px 0;
+    font-size: 15px;
+    color: #5f6368;
+    line-height: 1.4;
+  }
+
+  #rate-limit-dialog-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .rate-limit-btn {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 700;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  #rate-limit-wait-btn {
+    background: #f1f3f4;
+    color: var(--text);
+  }
+
+  #rate-limit-turbo-btn {
+    background: var(--green);
+    color: #fff;
+  }
+
   /* ---------- SETTINGS SCREEN ---------- */
   #settings-screen {
     display: none;
@@ -478,7 +542,7 @@
     height: 22px;
   }
 
-  #save-key-btn {
+  #save-key-btn, #save-turbo-key-btn {
     width: 100%;
     padding: 16px;
     font-size: 17px;
@@ -491,11 +555,44 @@
     margin-top: 8px;
   }
 
-  #key-status {
+  #key-status, #turbo-key-status {
     margin-top: 12px;
     font-size: 14px;
     color: var(--green);
     min-height: 18px;
+  }
+
+  #settings-tier-toggle-btn {
+    width: 100%;
+    padding: 16px;
+    font-size: 17px;
+    font-weight: 700;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  /* ---------- TIER INDICATOR (status line) ---------- */
+  #tier-indicator {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 12px;
+    margin-right: 8px;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+
+  #tier-indicator.tier-free {
+    background: #e8eaed;
+    color: #5f6368;
+  }
+
+  #tier-indicator.tier-turbo {
+    background: var(--green);
+    color: #fff;
   }
 
   /* ---------- TOAST ---------- */
@@ -548,7 +645,7 @@
   </div>
 
   <!-- ============ STATUS LINE ============ -->
-  <div id="status-line">Ready. Tap Start to open the camera. (QR reading and AI analysis are not connected yet.)</div>
+  <div id="status-line"><span id="tier-indicator" class="tier-free">FREE</span><span id="status-text">Ready. Tap Start to open the camera. (QR reading and AI analysis are not connected yet.)</span></div>
 
   <!-- ============ MIDDLE / CAMERA AREA ============ -->
   <div id="middle-area">
@@ -607,18 +704,35 @@
   </div>
 </div>
 
+<!-- ============ RATE-LIMIT DIALOG (Blueprint Section 2) ============ -->
+<div id="rate-limit-dialog">
+  <div id="rate-limit-dialog-inner">
+    <h3>Rate Limit Reached</h3>
+    <p>The free tier allows only a few scans per minute. You can wait a
+      moment and let ClassScan keep retrying automatically, or switch to
+      💲 Turbo for faster, uninterrupted scanning for the rest of this
+      session.</p>
+    <div id="rate-limit-dialog-buttons">
+      <button id="rate-limit-wait-btn" class="rate-limit-btn" onclick="handleRateLimitWait()">Wait</button>
+      <button id="rate-limit-turbo-btn" class="rate-limit-btn" onclick="handleRateLimitTurbo()">💲 Turbo</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ SETTINGS SCREEN ============ -->
 <div id="settings-screen">
   <div id="settings-header">
     <button id="settings-back" onclick="closeSettings()">←</button>
+
     <h2>Settings</h2>
   </div>
   <div id="settings-body">
-    <label class="settings-label" for="api-key-input">Gemini API Key</label>
-    <input type="text" id="api-key-input" placeholder="Paste your Gemini API key here" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <label class="settings-label" for="api-key-input">Free-tier Gemini API Key</label>
+    <input type="text" id="api-key-input" placeholder="Paste your free Gemini API key here" autocomplete="off" autocapitalize="off" spellcheck="false">
     <div class="settings-help">
-      Get a free key from Google AI Studio. This key lets ClassScan read your scanned cards/sheets.
-      It is stored only in this browser — never uploaded anywhere else by this app.
+      Get a free key from Google AI Studio. This is the key ClassScan uses by
+      default — scans are throttled to about one every 6 seconds to stay
+      within the free tier's rate limit.
     </div>
 
     <div class="settings-checkbox-row">
@@ -626,8 +740,39 @@
       <label for="remember-key-checkbox">Remember this key on this device</label>
     </div>
 
-    <button id="save-key-btn" onclick="saveApiKey()">Save Key</button>
+    <button id="save-key-btn" onclick="saveApiKey()">Save Free-tier Key</button>
     <div id="key-status"></div>
+
+    <hr style="margin: 28px 0; border: none; border-top: 1px solid var(--border);">
+
+    <label class="settings-label" for="turbo-api-key-input">💲 Turbo (Paid-tier) Gemini API Key</label>
+    <input type="text" id="turbo-api-key-input" placeholder="Paste your paid Gemini API key here" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <div class="settings-help">
+      Optional. A key from a Google AI Studio project with billing enabled.
+      Turbo scans about once per second instead of once every 6 seconds —
+      useful for a large class or a quota crunch. This costs real money per
+      scan (a few cents at most per class); ClassScan never switches to
+      Turbo on its own — you choose it here or from the Rate-Limit dialog.
+    </div>
+
+    <div class="settings-checkbox-row">
+      <input type="checkbox" id="remember-turbo-key-checkbox">
+      <label for="remember-turbo-key-checkbox">Remember this key on this device</label>
+    </div>
+
+    <button id="save-turbo-key-btn" onclick="saveTurboApiKey()">Save Turbo Key</button>
+    <div id="turbo-key-status"></div>
+
+    <hr style="margin: 28px 0; border: none; border-top: 1px solid var(--border);">
+
+    <label class="settings-label">Active Tier</label>
+    <div class="settings-help" style="margin-bottom: 12px;">
+      ClassScan always starts in Free mode when the app is opened. Switching
+      to Turbo here (or from the Rate-Limit dialog) stays on for the rest of
+      this session — it survives Stop and Reset — until you switch back or
+      close the app.
+    </div>
+    <button id="settings-tier-toggle-btn" onclick="toggleTierFromSettings()"></button>
   </div>
 </div>
 
@@ -752,7 +897,9 @@
       return new Error('API key rejected — re-enter in Settings.' + detail);
     }
     if (err && err.httpStatus === 429) {
-      return new Error('Rate limit — wait a few seconds, the queue will retry.' + detail);
+      const rateLimitErr = new Error('Rate limit — wait a few seconds, the queue will retry.' + detail);
+      rateLimitErr.isRateLimit = true;
+      return rateLimitErr;
     }
     if (err && err.httpStatus >= 500) {
       return new Error('Vision service is temporarily unavailable. Try again in a moment.' + detail);
@@ -766,7 +913,7 @@
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey
+        'x-goog-api-key': currentApiKey()
       },
       body: JSON.stringify({
         contents: [{
@@ -804,8 +951,9 @@
   const GeminiVisionEngine = {
     name: 'gemini',
     async analyze(imageBase64, modeSpec) {
-      if (!apiKey) {
-        throw new Error('No API key set — open Settings (⚙️) and paste your Gemini API key.');
+      if (!currentApiKey()) {
+        const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
+        throw new Error('No ' + tierLabel + ' API key set — open Settings (⚙️) and paste one.');
       }
 
       const basePrompt = modeSpec.prompt;
@@ -857,14 +1005,23 @@
   };
 
   // ---------------------------------------------------------------
-  // GLOBAL 4-SECOND VISION THROTTLE QUEUE (Blueprint Section 2)
+  // GLOBAL VISION THROTTLE QUEUE (Blueprint Section 2)
   // All modes funnel vision calls through this so no two calls ever
-  // fire less than 4 seconds apart, regardless of how fast the
-  // teacher taps Capture.
+  // fire closer together than the ACTIVE TIER's throttle allows,
+  // regardless of how fast the teacher taps Capture. Free ≈ 6s between
+  // calls (free-tier rate limit); Turbo ≈ 1s. The throttle is read
+  // fresh at the moment each queued call is about to fire, so a
+  // mid-queue tier switch (e.g. via the Rate-Limit dialog) speeds up
+  // calls still waiting in line without needing to rebuild the queue.
   // ---------------------------------------------------------------
-  const VISION_THROTTLE_MS = 6000;
+  const VISION_THROTTLE_MS_FREE = 6000;
+  const VISION_THROTTLE_MS_TURBO = 1000;
   let lastVisionCallStart = 0;
   let visionQueueTail = Promise.resolve();
+
+  function currentThrottleMs() {
+    return activeTier === 'turbo' ? VISION_THROTTLE_MS_TURBO : VISION_THROTTLE_MS_FREE;
+  }
 
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -873,7 +1030,7 @@
   function enqueueVisionCall(taskFn) {
     const runner = visionQueueTail.then(async () => {
       const now = Date.now();
-      const waitMs = Math.max(0, lastVisionCallStart + VISION_THROTTLE_MS - now);
+      const waitMs = Math.max(0, lastVisionCallStart + currentThrottleMs() - now);
       if (waitMs > 0) {
         setStatus('Waiting for API throttle (' + Math.ceil(waitMs / 1000) + 's)…');
         await sleep(waitMs);
@@ -1098,9 +1255,22 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 {"entries":[{"key":"<name>","fields":{"response":"<text>","conditionBubble":"<A|B|C|D|>","conditionText":"<text>"},"confidence":{"response":"high|low","conditionBubble":"high|low","conditionText":"high|low"}}],"warnings":["<short warning strings, or an empty array>"]}`;
 
   // ---------------------------------------------------------------
-  // API KEY / SETTINGS WIRING (Blueprint Section 2)
+  // API KEY / VISION TIER WIRING (Blueprint Section 2)
+  //
+  // Two independent key slots — Free and 💲Turbo — same engine/model,
+  // only the key and throttle differ. Free is the default at EVERY app
+  // launch (never remembered as "last active tier" across sessions,
+  // even though the KEYS themselves can be remembered). Switching to
+  // Turbo mid-session is sticky until the app is closed or Settings
+  // switches back — it must survive Stop and Reset.
   // ---------------------------------------------------------------
-  let apiKey = '';
+  let apiKey = '';        // Free-tier key
+  let turboApiKey = '';   // 💲Turbo (paid-tier) key
+  let activeTier = 'free'; // 'free' | 'turbo' — always starts 'free' on launch, regardless of saved keys
+
+  function currentApiKey() {
+    return activeTier === 'turbo' ? turboApiKey : apiKey;
+  }
 
   function loadSavedApiKey() {
     try {
@@ -1116,6 +1286,26 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     } catch (err) {
       // localStorage unavailable (e.g. private browsing) — key just won't persist.
     }
+
+    try {
+      const savedTurbo = localStorage.getItem('classscan_gemini_turbo_key');
+      if (savedTurbo) {
+        turboApiKey = savedTurbo;
+        document.getElementById('turbo-api-key-input').value = savedTurbo;
+        document.getElementById('remember-turbo-key-checkbox').checked = true;
+        const turboStatusEl = document.getElementById('turbo-key-status');
+        turboStatusEl.style.color = 'var(--green)';
+        turboStatusEl.textContent = 'Using a saved key from this device.';
+      }
+    } catch (err) {
+      // localStorage unavailable — key just won't persist.
+    }
+
+    // Free is always the launch default (Blueprint Section 2) even if a
+    // Turbo key is saved — sticky Turbo is a same-session thing only.
+    activeTier = 'free';
+    renderTierIndicator();
+    renderSettingsTierToggle();
   }
 
   function saveApiKey() {
@@ -1146,8 +1336,91 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     statusEl.textContent = remember
       ? 'Key saved for this session and remembered on this device.'
       : 'Key saved for this session only.';
-    showToast('API key saved');
-    closeSettings();
+    showToast('Free-tier API key saved');
+  }
+
+  function saveTurboApiKey() {
+    const input = document.getElementById('turbo-api-key-input');
+    const remember = document.getElementById('remember-turbo-key-checkbox').checked;
+    const value = input.value.trim();
+    const statusEl = document.getElementById('turbo-key-status');
+
+    if (!value) {
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = 'Please paste a key before saving.';
+      return;
+    }
+
+    turboApiKey = value;
+
+    try {
+      if (remember) {
+        localStorage.setItem('classscan_gemini_turbo_key', value);
+      } else {
+        localStorage.removeItem('classscan_gemini_turbo_key');
+      }
+    } catch (err) {
+      // ignore storage errors — key still works for this session via the JS variable
+    }
+
+    statusEl.style.color = 'var(--green)';
+    statusEl.textContent = remember
+      ? 'Key saved for this session and remembered on this device.'
+      : 'Key saved for this session only.';
+    showToast('Turbo API key saved');
+  }
+
+  // ---- Tier switching (Blueprint Section 2) ----
+  // Sticky for the rest of the session — survives Stop and Reset — until
+  // the app is closed or Settings switches back. Neither Stop nor Reset
+  // touch activeTier anywhere in this file, by design.
+  function setActiveTier(tier) {
+    activeTier = tier;
+    renderTierIndicator();
+    renderSettingsTierToggle();
+  }
+
+  function renderTierIndicator() {
+    const el = document.getElementById('tier-indicator');
+    if (!el) return;
+    if (activeTier === 'turbo') {
+      el.textContent = '💲 TURBO';
+      el.classList.remove('tier-free');
+      el.classList.add('tier-turbo');
+    } else {
+      el.textContent = 'FREE';
+      el.classList.remove('tier-turbo');
+      el.classList.add('tier-free');
+    }
+  }
+
+  function renderSettingsTierToggle() {
+    const btn = document.getElementById('settings-tier-toggle-btn');
+    if (!btn) return;
+    if (activeTier === 'turbo') {
+      btn.textContent = 'Switch to Free tier';
+      btn.style.background = 'var(--grey)';
+    } else {
+      btn.textContent = 'Switch to 💲 Turbo';
+      btn.style.background = 'var(--green)';
+    }
+  }
+
+  function toggleTierFromSettings() {
+    if (activeTier === 'turbo') {
+      setActiveTier('free');
+      showToast('Switched to Free tier');
+      return;
+    }
+    // Switching TO Turbo from Settings — same "prompt if missing" rule
+    // as the Rate-Limit dialog's Turbo button (Blueprint Section 2).
+    if (!turboApiKey) {
+      showToast('Paste a Turbo API key below first, then tap Save Turbo Key');
+      document.getElementById('turbo-api-key-input').focus();
+      return;
+    }
+    setActiveTier('turbo');
+    showToast('Switched to 💲 Turbo');
   }
 
   // ---------------------------------------------------------------
@@ -1711,6 +1984,69 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     activeCharts = [];
   }
 
+  // ---- Rate-Limit dialog (Blueprint Section 2) ----
+  // Shown when the API returns a quota/429 error while on the Free
+  // tier. Resolves to 'wait' or 'turbo' once the person taps a button.
+  // If Turbo is chosen but no Turbo key is stored yet, the dialog stays
+  // open and instead prompts for one inline — Settings doesn't need to
+  // be opened separately mid-scan.
+  let rateLimitDialogResolve = null;
+
+  function showRateLimitDialog() {
+    document.getElementById('rate-limit-dialog').classList.add('show');
+    return new Promise(resolve => {
+      rateLimitDialogResolve = resolve;
+    });
+  }
+
+  function hideRateLimitDialog() {
+    document.getElementById('rate-limit-dialog').classList.remove('show');
+  }
+
+  function handleRateLimitWait() {
+    hideRateLimitDialog();
+    if (rateLimitDialogResolve) {
+      const resolve = rateLimitDialogResolve;
+      rateLimitDialogResolve = null;
+      resolve('wait');
+    }
+  }
+
+  function handleRateLimitTurbo() {
+    if (!turboApiKey) {
+      // No Turbo key stored — prompt for one right here instead of
+      // resolving the dialog away. Reuses the same simple browser
+      // prompt pattern as nowhere else in the app, but this is a
+      // rare/edge interaction (mid-scan key entry) where a lightweight
+      // prompt is more appropriate than sending the person away from
+      // their scanning flow into the full Settings screen.
+      const entered = window.prompt('Paste your 💲 Turbo (paid-tier) Gemini API key:');
+      if (!entered || !entered.trim()) {
+        return; // stayed on the dialog — person can still tap Wait, or try Turbo again
+      }
+      turboApiKey = entered.trim();
+      document.getElementById('turbo-api-key-input').value = turboApiKey;
+      try {
+        localStorage.setItem('classscan_gemini_turbo_key', turboApiKey);
+        document.getElementById('remember-turbo-key-checkbox').checked = true;
+      } catch (err) {
+        // ignore storage errors — key still works for this session
+      }
+      const turboStatusEl = document.getElementById('turbo-key-status');
+      if (turboStatusEl) {
+        turboStatusEl.style.color = 'var(--green)';
+        turboStatusEl.textContent = 'Key saved from the Rate-Limit dialog.';
+      }
+    }
+
+    hideRateLimitDialog();
+    if (rateLimitDialogResolve) {
+      const resolve = rateLimitDialogResolve;
+      rateLimitDialogResolve = null;
+      resolve('turbo');
+    }
+  }
+
   // ---- Average (Blueprint Section 8: "numeric only; skipped-count
   // reported; overall + per-condition when >1 condition") ----
   function handleAverage() {
@@ -2004,7 +2340,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   const bannerEl = document.getElementById('ready-banner');
   const startCaptureBtn = document.getElementById('start-capture-btn');
   const torchToggleBtn = document.getElementById('torch-toggle');
-  const statusLineEl = document.getElementById('status-line');
+  const statusLineEl = document.getElementById('status-text');
 
   function setStatus(msg) {
     statusLineEl.textContent = msg;
@@ -2126,9 +2462,10 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       return;
     }
 
-    if (!apiKey) {
-      setStatus('No API key set — open Settings (⚙️) and paste your Gemini API key.');
-      showToast('API key missing — open Settings');
+    if (!currentApiKey()) {
+      const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
+      setStatus('No ' + tierLabel + ' API key set — open Settings (⚙️) and paste one.');
+      showToast(tierLabel + ' API key missing — open Settings');
       resumeLiveView(false);
       return;
     }
@@ -2138,6 +2475,19 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     const dataUrl = canvasEl.toDataURL('image/jpeg', 0.85);
     const base64 = dataUrl.split(',')[1];
 
+    await runVisionCallWithRateLimitHandling(base64, qrName);
+  }
+
+  // Runs the Cards-front vision call, and if it fails specifically with
+  // a Free-tier rate limit (429), shows the Rate-Limit dialog instead of
+  // the generic error toast (Blueprint Section 2). Whichever button the
+  // person taps, this same in-flight capture is what gets resolved —
+  // "Wait" just lets the normal throttle queue retry it, "💲 Turbo"
+  // switches tier and immediately retries this exact capture with the
+  // new key/throttle, which is what "reprocesses the pending queue"
+  // means in a single-capture-at-a-time pipeline (PDF Import's
+  // multi-page queue, Section 6a, doesn't exist yet to reprocess).
+  async function runVisionCallWithRateLimitHandling(base64, qrName) {
     try {
       const result = await enqueueVisionCall(() =>
         VisionEngine.analyze(base64, { prompt: CARDS_FRONT_PROMPT })
@@ -2146,6 +2496,31 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       setStatus('Scan added to the table.');
       resumeLiveView(true);
     } catch (err) {
+      if (err && err.isRateLimit && activeTier === 'free') {
+        const choice = await showRateLimitDialog();
+        if (choice === 'turbo') {
+          // Turbo key missing — showRateLimitDialog already prompted and
+          // left the dialog open in that case; only proceed once a key
+          // actually got set.
+          if (!turboApiKey) {
+            resumeLiveView(false);
+            return;
+          }
+          setActiveTier('turbo');
+          showToast('Switched to 💲 Turbo — retrying this scan');
+          setStatus('Retrying with 💲 Turbo…');
+          await runVisionCallWithRateLimitHandling(base64, qrName);
+          return;
+        }
+        // "Wait" — let the normal throttle queue retry naturally on the
+        // next Capture tap; don't auto-retry silently in the background,
+        // since a queued Free-tier retry could sit for several more
+        // seconds with no camera control feedback.
+        setStatus('Still on Free tier — tap Capture again when ready.');
+        resumeLiveView(false);
+        return;
+      }
+
       const msg = (err && err.message) || 'Scan not understood — try again.';
       setStatus(msg);
       showToast(msg);
@@ -2274,6 +2649,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       roster = {}; // Section 7: roster persists "until Clear List or tab close"
       anonymousMode = false; // Section 8: "resets OFF on close"
       anonymousMap = {};
+      setActiveTier('free'); // Section 2: Free is the default at EVERY app launch, and a bfcache restore is a new session by this same logic
       const ghostToggle = document.getElementById('ghost-toggle');
       if (ghostToggle) ghostToggle.classList.remove('on');
       if (cameraActive) {
