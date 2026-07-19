@@ -301,6 +301,109 @@
     font-size: 15px;
   }
 
+  /* ---------- RESULTS MODAL (Average / Tally / Chart) ---------- */
+  #results-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 150;
+    align-items: flex-end;
+    justify-content: center;
+  }
+
+  #results-modal.show {
+    display: flex;
+  }
+
+  #results-modal-inner {
+    background: var(--card-bg);
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    border-radius: 16px 16px 0 0;
+    padding: 16px;
+  }
+
+  #results-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  #results-modal-header h3 {
+    margin: 0;
+    flex: 1;
+    font-size: 19px;
+  }
+
+  #results-modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 4px 8px;
+    line-height: 1;
+  }
+
+  .results-modal-section {
+    margin-bottom: 18px;
+  }
+
+  .results-modal-section h4 {
+    margin: 0 0 8px 0;
+    font-size: 15px;
+    color: var(--grey);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .stat-line {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 16px;
+  }
+
+  .stat-line .stat-label {
+    color: var(--text);
+  }
+
+  .stat-line .stat-value {
+    font-weight: 700;
+  }
+
+  .tally-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 15px;
+  }
+
+  .tally-bar-track {
+    flex: 1;
+    height: 10px;
+    background: #eee;
+    border-radius: 6px;
+    margin: 0 10px;
+    overflow: hidden;
+  }
+
+  .tally-bar-fill {
+    height: 100%;
+    background: var(--blue);
+  }
+
+  .chart-canvas-wrap {
+    position: relative;
+    height: 220px;
+    margin-bottom: 20px;
+  }
+
   /* ---------- SETTINGS SCREEN ---------- */
   #settings-screen {
     display: none;
@@ -464,10 +567,10 @@
     <button class="action-btn" id="start-capture-btn" onclick="handleStartCapture()">Start</button>
     <button class="action-btn stop-btn" id="stop-btn" onclick="stopCamera()">Stop</button>
     <button class="action-btn secondary-btn" onclick="handleUndo()">Undo</button>
-    <button class="action-btn secondary-btn" onclick="notReady('Copy')">Copy</button>
-    <button class="action-btn secondary-btn" id="btn-average" onclick="notReady('Average')">Average</button>
-    <button class="action-btn secondary-btn" id="btn-tally" onclick="notReady('Tally')">Tally</button>
-    <button class="action-btn secondary-btn" id="btn-chart" onclick="notReady('Chart')">Chart</button>
+    <button class="action-btn secondary-btn" onclick="handleCopy()">Copy</button>
+    <button class="action-btn secondary-btn" id="btn-average" onclick="handleAverage()">Average</button>
+    <button class="action-btn secondary-btn" id="btn-tally" onclick="handleTally()">Tally</button>
+    <button class="action-btn secondary-btn" id="btn-chart" onclick="handleChart()">Chart</button>
     <button class="action-btn secondary-btn" onclick="handleLoadList()">Load List</button>
     <button class="action-btn secondary-btn" onclick="handleClearList()">Clear List</button>
     <button class="action-btn secondary-btn" onclick="notReady('Link (export)')">Link</button>
@@ -491,6 +594,17 @@
     <div id="empty-state">No data yet. Load a roster or start scanning to see results here.</div>
   </div>
 
+</div>
+
+<!-- ============ RESULTS MODAL (Average / Tally / Chart) ============ -->
+<div id="results-modal">
+  <div id="results-modal-inner">
+    <div id="results-modal-header">
+      <h3 id="results-modal-title">Results</h3>
+      <button id="results-modal-close" onclick="closeResultsModal()">✕</button>
+    </div>
+    <div id="results-modal-body"></div>
+  </div>
 </div>
 
 <!-- ============ SETTINGS SCREEN ============ -->
@@ -521,6 +635,7 @@
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
   // ---------------------------------------------------------------
   // ClassScan — Step 1.3
@@ -1158,6 +1273,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     anonymousMap = {};
     const ghostToggle = document.getElementById('ghost-toggle');
     if (ghostToggle) ghostToggle.classList.remove('on');
+    closeResultsModal(); // avoid showing a stale Average/Tally/Chart view after Reset
     renderTable();
     showToast('Table reset');
     setStatus('Table reset. Roster and API key settings kept.');
@@ -1316,6 +1432,413 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     }
 
     renderTable();
+  }
+
+  // ---------------------------------------------------------------
+  // COPY / AVERAGE / TALLY / CHART (Blueprint Section 8)
+  //
+  // SCOPE NOTE: these operate on Cards-mode data only. Quiz and
+  // Participation have no data model yet (Build Phases 10-11 are
+  // still ahead) — those modes' Average/Tally/Chart buttons are
+  // already grey/disabled via selectMode()'s existing logic, so this
+  // step doesn't need to touch them.
+  // ---------------------------------------------------------------
+
+  // Shared: the exact same row set / ordering the table currently
+  // displays, so Copy/Average/Tally/Chart never disagree with what's
+  // on screen. Mirrors renderTable()'s key collection + sort.
+  function getSortedDisplayRows() {
+    const allKeys = getAllRowKeys();
+    const rows = allKeys.map(buildDisplayRow);
+    rows.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }));
+    return rows;
+  }
+
+  // Per Blueprint Section 8: "if the table contains >=1 uncorrected
+  // low-confidence cell at export time" — checks Response and
+  // Condition flags across all rows currently in tableData (roster
+  // placeholder rows with no data can't be flagged).
+  function anyLowConfidenceFlags(rows) {
+    return rows.some(r => r.hasData && (r.responseLowConf || r.conditionLowConf));
+  }
+
+  // Per-row flag label list for the Flags column, e.g. "Response" or
+  // "Response, Condition". Uses the CURRENT on-screen header labels so
+  // it stays correct if headers are ever renamed (table v2, later step).
+  function getRowFlagLabels(row, responseHeaderLabel, conditionHeaderLabel) {
+    const flags = [];
+    if (row.hasData && row.responseLowConf) flags.push(responseHeaderLabel);
+    if (row.hasData && row.conditionLowConf) flags.push(conditionHeaderLabel);
+    return flags.join(', ');
+  }
+
+  function tsvEscapeCell(value) {
+    // Tab-separated export: neutralize tabs/newlines inside a cell so
+    // they can't be mistaken for column/row separators by the
+    // spreadsheet the teacher pastes into.
+    return (value === null || value === undefined ? '' : String(value))
+      .replace(/\t/g, ' ')
+      .replace(/\r?\n/g, ' ');
+  }
+
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    // Fallback for browsers/contexts where the async Clipboard API is
+    // unavailable (e.g. non-HTTPS GitHub Pages preview, older Chrome).
+    return new Promise((resolve, reject) => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) resolve(); else reject(new Error('execCommand copy failed'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  // ---- Copy (Blueprint Section 8) ----
+  function handleCopy() {
+    const rows = getSortedDisplayRows();
+
+    if (rows.length === 0) {
+      showToast('No data to copy yet');
+      return;
+    }
+
+    const anyCondition = rows.some(r => computeConditionDisplay(r) !== '');
+    const anyFlags = anyLowConfidenceFlags(rows);
+
+    const responseHeader = 'Response';
+    const conditionHeader = 'Condition';
+
+    const headerCells = ['Name', responseHeader];
+    if (anyCondition) headerCells.push(conditionHeader);
+    if (anyFlags) headerCells.push('Flags');
+
+    const lines = [headerCells.map(tsvEscapeCell).join('\t')];
+
+    rows.forEach(row => {
+      const displayName = anonymousMode ? getAnonymousCode(row.key) : row.displayName;
+      const cells = [displayName, row.response];
+      if (anyCondition) cells.push(computeConditionDisplay(row));
+      if (anyFlags) cells.push(getRowFlagLabels(row, responseHeader, conditionHeader));
+      lines.push(cells.map(tsvEscapeCell).join('\t'));
+    });
+
+    const tsv = lines.join('\n');
+
+    copyTextToClipboard(tsv).then(() => {
+      showToast('Copied ' + rows.length + ' row(s) to clipboard');
+    }).catch(() => {
+      showToast('Could not copy — clipboard access blocked by the browser');
+    });
+  }
+
+  // ---- Results modal shared open/close ----
+  function openResultsModal(title, bodyEl) {
+    document.getElementById('results-modal-title').textContent = title;
+    const body = document.getElementById('results-modal-body');
+    body.innerHTML = '';
+    body.appendChild(bodyEl);
+    document.getElementById('results-modal').classList.add('show');
+  }
+
+  function closeResultsModal() {
+    document.getElementById('results-modal').classList.remove('show');
+    // Destroy any live Chart.js instances so they don't keep rendering
+    // (and leak memory) once their canvases are gone from the DOM.
+    activeCharts.forEach(c => { try { c.destroy(); } catch (e) {} });
+    activeCharts = [];
+  }
+
+  // ---- Average (Blueprint Section 8: "numeric only; skipped-count
+  // reported; overall + per-condition when >1 condition") ----
+  function handleAverage() {
+    const rows = getSortedDisplayRows().filter(r => r.hasData);
+
+    if (rows.length === 0) {
+      showToast('No data to average yet');
+      return;
+    }
+
+    // "Numeric only" — a response counts toward the average only if
+    // it parses cleanly as a number (e.g. "7", "3.5"); anything else
+    // (blank, "Yes", "B", "N/A", stray text) is a skip, not a zero.
+    function toNumericOrNull(str) {
+      const trimmed = (str || '').toString().trim();
+      if (trimmed === '') return null;
+      if (!/^-?\d+(\.\d+)?$/.test(trimmed)) return null;
+      const n = parseFloat(trimmed);
+      return isNaN(n) ? null : n;
+    }
+
+    function summarize(subset) {
+      const values = [];
+      let skipped = 0;
+      subset.forEach(r => {
+        const n = toNumericOrNull(r.response);
+        if (n === null) skipped++;
+        else values.push(n);
+      });
+      const sum = values.reduce((a, b) => a + b, 0);
+      const avg = values.length > 0 ? sum / values.length : null;
+      return { avg: avg, count: values.length, skipped: skipped };
+    }
+
+    const distinctConditions = Array.from(new Set(
+      rows.map(r => computeConditionDisplay(r)).filter(c => c !== '')
+    ));
+
+    const container = document.createElement('div');
+
+    const overallSection = document.createElement('div');
+    overallSection.className = 'results-modal-section';
+    const overallHeading = document.createElement('h4');
+    overallHeading.textContent = 'Overall';
+    overallSection.appendChild(overallHeading);
+
+    const overall = summarize(rows);
+    overallSection.appendChild(buildStatLine('Average', overall.avg === null ? '—' : overall.avg.toFixed(2)));
+    overallSection.appendChild(buildStatLine('Numeric responses used', String(overall.count)));
+    overallSection.appendChild(buildStatLine('Skipped (non-numeric/blank)', String(overall.skipped)));
+    container.appendChild(overallSection);
+
+    if (distinctConditions.length > 1) {
+      distinctConditions.forEach(cond => {
+        const subset = rows.filter(r => computeConditionDisplay(r) === cond);
+        const stats = summarize(subset);
+
+        const section = document.createElement('div');
+        section.className = 'results-modal-section';
+        const heading = document.createElement('h4');
+        heading.textContent = 'Condition: ' + cond;
+        section.appendChild(heading);
+        section.appendChild(buildStatLine('Average', stats.avg === null ? '—' : stats.avg.toFixed(2)));
+        section.appendChild(buildStatLine('Numeric responses used', String(stats.count)));
+        section.appendChild(buildStatLine('Skipped (non-numeric/blank)', String(stats.skipped)));
+        container.appendChild(section);
+      });
+    }
+
+    openResultsModal('Average', container);
+  }
+
+  function buildStatLine(label, value) {
+    const line = document.createElement('div');
+    line.className = 'stat-line';
+    const l = document.createElement('span');
+    l.className = 'stat-label';
+    l.textContent = label;
+    const v = document.createElement('span');
+    v.className = 'stat-value';
+    v.textContent = value;
+    line.appendChild(l);
+    line.appendChild(v);
+    return line;
+  }
+
+  // ---- Tally (Blueprint Section 8: "as v1.0 for Cards" — counts/%
+  // of each distinct response value) ----
+  function computeTally(rows) {
+    const counts = {};
+    let total = 0;
+    rows.forEach(r => {
+      const val = (r.response || '').toString().trim();
+      if (val === '') return; // blank responses don't count toward tally
+      counts[val] = (counts[val] || 0) + 1;
+      total++;
+    });
+    const items = Object.keys(counts).map(val => ({
+      value: val,
+      count: counts[val],
+      pct: total > 0 ? (counts[val] / total) * 100 : 0
+    }));
+    // Highest count first; ties broken alphabetically for stable display.
+    items.sort((a, b) => (b.count - a.count) || a.value.localeCompare(b.value, undefined, { sensitivity: 'base' }));
+    return { items: items, total: total };
+  }
+
+  function buildTallySection(headingText, rows) {
+    const section = document.createElement('div');
+    section.className = 'results-modal-section';
+    const heading = document.createElement('h4');
+    heading.textContent = headingText;
+    section.appendChild(heading);
+
+    const tally = computeTally(rows);
+
+    if (tally.items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'stat-line';
+      empty.textContent = 'No responses yet.';
+      section.appendChild(empty);
+      return section;
+    }
+
+    tally.items.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'tally-row';
+
+      const label = document.createElement('span');
+      label.textContent = item.value;
+      label.style.minWidth = '70px';
+
+      const track = document.createElement('div');
+      track.className = 'tally-bar-track';
+      const fill = document.createElement('div');
+      fill.className = 'tally-bar-fill';
+      fill.style.width = item.pct.toFixed(0) + '%';
+      track.appendChild(fill);
+
+      const countLabel = document.createElement('span');
+      countLabel.textContent = item.count + ' (' + item.pct.toFixed(0) + '%)';
+      countLabel.style.minWidth = '70px';
+      countLabel.style.textAlign = 'right';
+
+      row.appendChild(label);
+      row.appendChild(track);
+      row.appendChild(countLabel);
+      section.appendChild(row);
+    });
+
+    return section;
+  }
+
+  function handleTally() {
+    const rows = getSortedDisplayRows().filter(r => r.hasData);
+
+    if (rows.length === 0) {
+      showToast('No data to tally yet');
+      return;
+    }
+
+    const distinctConditions = Array.from(new Set(
+      rows.map(r => computeConditionDisplay(r)).filter(c => c !== '')
+    ));
+
+    const container = document.createElement('div');
+    container.appendChild(buildTallySection('Overall', rows));
+
+    if (distinctConditions.length > 1) {
+      distinctConditions.forEach(cond => {
+        const subset = rows.filter(r => computeConditionDisplay(r) === cond);
+        container.appendChild(buildTallySection('Condition: ' + cond, subset));
+      });
+    }
+
+    openResultsModal('Tally', container);
+  }
+
+  // ---- Chart (Blueprint Section 8: "Chart.js percentage bars, one
+  // chart per condition when multiple") ----
+  let activeCharts = []; // tracked so closeResultsModal() can destroy them cleanly
+
+  function buildChartSection(headingText, rows, canvasId) {
+    const section = document.createElement('div');
+    section.className = 'results-modal-section';
+    const heading = document.createElement('h4');
+    heading.textContent = headingText;
+    section.appendChild(heading);
+
+    const tally = computeTally(rows);
+
+    if (tally.items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'stat-line';
+      empty.textContent = 'No responses yet.';
+      section.appendChild(empty);
+      return section;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-canvas-wrap';
+    const canvas = document.createElement('canvas');
+    canvas.id = canvasId;
+    wrap.appendChild(canvas);
+    section.appendChild(wrap);
+
+    // Deferred: the canvas must be in the live DOM before Chart.js can
+    // measure it, so charts are instantiated after openResultsModal()
+    // has appended this section — see handleChart() below.
+    section.dataset.pendingChart = 'true';
+
+    return section;
+  }
+
+  function handleChart() {
+    if (typeof Chart !== 'function') {
+      showToast('Chart library failed to load — check your internet connection and reload the page');
+      return;
+    }
+
+    const rows = getSortedDisplayRows().filter(r => r.hasData);
+
+    if (rows.length === 0) {
+      showToast('No data to chart yet');
+      return;
+    }
+
+    const distinctConditions = Array.from(new Set(
+      rows.map(r => computeConditionDisplay(r)).filter(c => c !== '')
+    ));
+
+    const container = document.createElement('div');
+    const chartSpecs = []; // { canvasId, rows } — instantiated after DOM insertion
+
+    if (distinctConditions.length > 1) {
+      distinctConditions.forEach((cond, idx) => {
+        const canvasId = 'chart-canvas-' + idx;
+        const subset = rows.filter(r => computeConditionDisplay(r) === cond);
+        container.appendChild(buildChartSection('Condition: ' + cond, subset, canvasId));
+        chartSpecs.push({ canvasId: canvasId, rows: subset });
+      });
+    } else {
+      const canvasId = 'chart-canvas-0';
+      container.appendChild(buildChartSection('Overall', rows, canvasId));
+      chartSpecs.push({ canvasId: canvasId, rows: rows });
+    }
+
+    openResultsModal('Chart', container);
+
+    activeCharts.forEach(c => { try { c.destroy(); } catch (e) {} });
+    activeCharts = [];
+
+    chartSpecs.forEach(spec => {
+      const canvasEl2 = document.getElementById(spec.canvasId);
+      if (!canvasEl2) return;
+      const tally = computeTally(spec.rows);
+      if (tally.items.length === 0) return;
+
+      const chart = new Chart(canvasEl2, {
+        type: 'bar',
+        data: {
+          labels: tally.items.map(i => i.value),
+          datasets: [{
+            label: '% of responses',
+            data: tally.items.map(i => Math.round(i.pct * 10) / 10),
+            backgroundColor: '#1a73e8'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } }
+          }
+        }
+      });
+      activeCharts.push(chart);
+    });
   }
 
   // ---- Camera state (discrete sub-mode only, per Blueprint Section 6) ----
