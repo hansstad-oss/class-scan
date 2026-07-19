@@ -913,6 +913,13 @@
   // ---------------------------------------------------------------
   const QR_BURST_MAX_ATTEMPTS = 10;
   const QR_BURST_INTERVAL_MS = 250; // 9 gaps between 10 samples ≈ 2.25s total, matching Blueprint's "~2 s"
+  // A QR code can decode successfully before the camera's autofocus has
+  // settled after a pan/move (it's small and high-contrast; the rest of
+  // the card isn't). Sampling a few more frames past the first decode
+  // gives focus a chance to catch up before "sharpest frame" is locked
+  // in, so Capture doesn't send a blurry photo to vision just because
+  // the QR happened to read early.
+  const QR_FRAMES_TO_KEEP_SAMPLING_AFTER_DECODE = 3;
 
   // Cheap relative sharpness estimate for picking the best frame out of
   // one burst. Downsamples to a small grayscale copy, then scores focus
@@ -960,7 +967,13 @@
    * Samples up to QR_BURST_MAX_ATTEMPTS fresh frames from a LIVE video
    * element (never frozen/hidden by this function — callers control
    * that), spaced QR_BURST_INTERVAL_MS apart, running a local jsQR
-   * decode on each. Stops sampling at the first successful decode.
+   * decode on each. Stops sampling once a decode has succeeded AND a
+   * further QR_FRAMES_TO_KEEP_SAMPLING_AFTER_DECODE frames have been
+   * sampled past it (not on the decode alone — a QR can decode from an
+   * early frame taken before the camera's autofocus has caught up after
+   * a pan, so stopping immediately on decode risked locking in a blurry
+   * "sharpest" frame even though genuinely sharp frames were still to
+   * come later in the burst).
    *
    * @param {HTMLVideoElement} videoEl - live camera video source
    * @param {HTMLCanvasElement} workCanvas - scratch canvas this function draws into each attempt (should stay hidden/off-screen for the duration; it is safe to reuse the app's existing freeze-canvas here since drawing into a display:none canvas has no visible effect)
@@ -979,6 +992,7 @@
     let bestSharpness = -1;
     let bestCanvas = null;
     let attemptsUsed = 0;
+    let framesLeftAfterDecode = -1; // -1 = "no decode yet"; counts down once qrText is set
 
     for (let attempt = 0; attempt < QR_BURST_MAX_ATTEMPTS; attempt++) {
       attemptsUsed = attempt + 1;
@@ -1013,18 +1027,35 @@
             bestCanvas = snapshot;
           }
 
-          if (typeof jsQR === 'function') {
+          // A QR code is small and high-contrast, so it can decode
+          // successfully even on an early frame taken while the camera
+          // is still racking focus after a pan/move — before the rest
+          // of the card (which the vision API needs to read) is sharp.
+          // So: stop re-running jsQR once we have a decode (no need to
+          // decode it twice), but keep sampling frames for SHARPNESS
+          // through the full burst window regardless. Only cut the
+          // burst short once BOTH a decode exists AND we've kept
+          // scanning a couple more frames past it, giving the lens a
+          // chance to settle before we lock in "best".
+          if (!qrText && typeof jsQR === 'function') {
             try {
               const qrResult = jsQR(imageData.data, imageData.width, imageData.height);
               if (qrResult && qrResult.data && qrResult.data.trim()) {
                 qrText = qrResult.data.trim();
-                break; // stop sampling at the first successful decode
+                framesLeftAfterDecode = QR_FRAMES_TO_KEEP_SAMPLING_AFTER_DECODE;
               }
             } catch (err) {
               // Decode failure on this one frame — just try the next sample.
             }
+          } else if (qrText && framesLeftAfterDecode > 0) {
+            framesLeftAfterDecode--;
           }
         }
+      }
+
+      const decodedAndSettled = qrText && framesLeftAfterDecode <= 0;
+      if (decodedAndSettled) {
+        break; // stop sampling — we have a decode AND gave focus a few extra frames to settle
       }
 
       if (attempt < QR_BURST_MAX_ATTEMPTS - 1) {
