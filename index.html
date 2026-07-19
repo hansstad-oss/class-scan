@@ -210,6 +210,21 @@
     justify-content: center;
   }
 
+  /* Blueprint v1.6 Section 8: "ALL remaining freed vertical space goes
+     to an ENLARGED camera preview." #table-wrap is the only flexible
+     (flex:1) element in the review-state layout, so the preview just
+     sits at its min-height. In scan state, flip which element is
+     flexible: #middle-area becomes flex:1 (grows to fill whatever the
+     now row-capped table doesn't need) and #table-wrap becomes
+     flex:0 0 auto (sized to its content, which the JS side caps to
+     exactly 3 rows — see getScanStateRows()). min-height:0 is the
+     standard fix for a column-flex item's implicit min-height:auto
+     otherwise fighting the flex-grow. */
+  body.camera-scanning #middle-area {
+    flex: 1;
+    min-height: 0;
+  }
+
   #camera-placeholder {
     position: relative;
     z-index: 1;
@@ -358,12 +373,14 @@
   #btn-clear-list { grid-column: 3; grid-row: 3; }
   #btn-reset { grid-column: 3; grid-row: 4; }
 
-  /* ---- SCAN state override: Stop · Capture · Undo, one row ----
-     Everything else in the bar is display:none (not just disabled) —
-     Blueprint: "All other buttons are review-state actions and are
-     unavailable while scanning." Removing them from layout (rather than
-     graying them out) is what actually frees the vertical space. */
+  /* ---- SCAN state override: Stop · Capture · Undo, one double-height
+     row, Capture widest and green ---- Everything else in the bar is
+     display:none (not just disabled) — Blueprint: "All other buttons
+     are review-state actions and are unavailable while scanning."
+     Removing them from layout (rather than graying them out) is what
+     actually frees the vertical space. */
   body.camera-scanning #button-bar {
+    grid-template-columns: 1fr 1.6fr 1fr;
     grid-template-rows: auto;
   }
 
@@ -376,6 +393,12 @@
   body.camera-scanning #link-btn,
   body.camera-scanning #btn-reset {
     display: none;
+  }
+
+  body.camera-scanning #stop-btn,
+  body.camera-scanning #start-capture-btn,
+  body.camera-scanning #btn-undo {
+    min-height: 88px;
   }
 
   body.camera-scanning #stop-btn { grid-column: 1; grid-row: 1; }
@@ -392,6 +415,15 @@
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     background: var(--card-bg);
+  }
+
+  /* Blueprint v1.6 Section 8: the table area shows exactly the 3 most
+     recent rows while scanning, and all space that frees up goes to
+     #middle-area (flex:1 override above) instead of the table — so
+     table-wrap stops being the flexible element here and just sizes to
+     its (row-capped) content. */
+  body.camera-scanning #table-wrap {
+    flex: 0 0 auto;
   }
 
   table {
@@ -913,7 +945,7 @@
          flashlight, Discrete/Continuous. Zero vertical-space cost since
          they float on top of the preview instead of sitting in a
          dedicated row. -->
-    <span id="tier-indicator" class="preview-overlay-btn tier-free">FREE</span>
+    <button id="tier-indicator" class="preview-overlay-btn tier-free" onclick="handleTierBadgeTap()">FREE</button>
     <button class="preview-overlay-btn" id="torch-toggle" onclick="toggleTorch()">🔦 Flashlight</button>
     <button class="preview-overlay-btn" id="submode-toggle" onclick="notReady('Discrete/Continuous switch')">Discrete</button>
   </div>
@@ -1791,6 +1823,48 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     showToast('Switched to 💲 Turbo');
   }
 
+  // ---- Tier badge tap (Blueprint v1.6 Section 8) ----
+  // Distinct from toggleTierFromSettings() above — that one (the
+  // Settings screen's dedicated button) is unchanged by this step.
+  // The on-preview BADGE specifically gets asymmetric confirmation:
+  // Free→Turbo needs a one-tap confirm (it spends money — no accidental
+  // edge-taps on a small overlay control), Turbo→Free is instant.
+  function handleTierBadgeTap() {
+    if (activeTier === 'turbo') {
+      setActiveTier('free');
+      showToast('Switched to Free tier');
+      return;
+    }
+
+    const confirmed = window.confirm('Switch to 💲Turbo?');
+    if (!confirmed) return;
+
+    if (!turboApiKey) {
+      // No Turbo key stored — prompt for one right here, same pattern
+      // as the Rate-Limit dialog's Turbo button (handleRateLimitTurbo).
+      const entered = window.prompt('Paste your 💲 Turbo (paid-tier) Gemini API key:');
+      if (!entered || !entered.trim()) {
+        return; // cancelled — stay on Free
+      }
+      turboApiKey = entered.trim();
+      document.getElementById('turbo-api-key-input').value = turboApiKey;
+      try {
+        localStorage.setItem('classscan_gemini_turbo_key', turboApiKey);
+        document.getElementById('remember-turbo-key-checkbox').checked = true;
+      } catch (err) {
+        // ignore storage errors — key still works for this session
+      }
+      const turboStatusEl = document.getElementById('turbo-key-status');
+      if (turboStatusEl) {
+        turboStatusEl.style.color = 'var(--green)';
+        turboStatusEl.textContent = 'Key saved from the tier badge.';
+      }
+    }
+
+    setActiveTier('turbo');
+    showToast('Switched to 💲 Turbo');
+  }
+
   // ---------------------------------------------------------------
   // RESULTS TABLE (Cards mode, front face)
   // Section 7: "If no roster is loaded, rows are created directly from
@@ -2040,14 +2114,31 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       return rows.sort((a, b) => compareRowsByColumn(a, b, sortState.column, sortState.direction === 'asc'));
     }
 
-    // Default layout (Blueprint Section 7): scanned rows in a
-    // newest-first block on top, unscanned (red) roster rows below,
-    // alphabetical, without a # until scanned.
+    return computeDefaultOrder(rows);
+  }
+
+  // Default layout (Blueprint Section 7): scanned rows in a newest-first
+  // block on top, unscanned (red) roster rows below, alphabetical,
+  // without a # until scanned. Pulled out of getOrderedRows() so
+  // getScanStateRows() (below) can reuse the exact same "newest first"
+  // ordering without going through — or being overridden by — sortState.
+  function computeDefaultOrder(rows) {
     const withData = rows.filter(r => r.hasData);
     const withoutData = rows.filter(r => !r.hasData);
     withData.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     withoutData.sort((a, b) => compareByNameFallback(a, b, true));
     return withData.concat(withoutData);
+  }
+
+  // Blueprint v1.6 Section 8: while scanning, the table shows exactly
+  // the 3 most recent rows, newest first — unconditionally, regardless
+  // of any column sort the person tapped into before starting the
+  // camera. The point is confirming what was just scanned, not
+  // reflecting whatever review-state sort was active; that sort is
+  // preserved in sortState and simply resumes once the camera stops.
+  function getScanStateRows() {
+    const rows = getAllRowKeys().map(buildDisplayRow);
+    return computeDefaultOrder(rows).slice(0, 3);
   }
 
   function handleHeaderSortClick(columnId) {
@@ -2192,7 +2283,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       columns.push({ id: 'condition', defaultLabel: 'Condition', editable: true });
     }
 
-    const orderedRows = getOrderedRows();
+    const orderedRows = cameraActive ? getScanStateRows() : getOrderedRows();
 
     // ---- Header row ----
     headerRow.innerHTML = '';
@@ -2779,11 +2870,10 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   function handleRateLimitTurbo() {
     if (!turboApiKey) {
       // No Turbo key stored — prompt for one right here instead of
-      // resolving the dialog away. Reuses the same simple browser
-      // prompt pattern as nowhere else in the app, but this is a
-      // rare/edge interaction (mid-scan key entry) where a lightweight
-      // prompt is more appropriate than sending the person away from
-      // their scanning flow into the full Settings screen.
+      // resolving the dialog away. Same lightweight prompt pattern as
+      // handleTierBadgeTap() uses; appropriate here too since this is a
+      // rare/edge interaction (mid-scan key entry) where sending the
+      // person away into the full Settings screen would be disruptive.
       const entered = window.prompt('Paste your 💲 Turbo (paid-tier) Gemini API key:');
       if (!entered || !entered.trim()) {
         return; // stayed on the dialog — person can still tap Wait, or try Turbo again
@@ -3354,9 +3444,14 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // driven off a single body class — camera-scanning collapses the full
   // grid down to Stop·Capture·Undo (see the CSS overrides) and, per
   // Section 8's overflow-menu note, Import is only usable while stopped.
+  // v1.6 adds the table's 3-row scan-state cap (Blueprint Section 8),
+  // which also depends on cameraActive, so re-render here too — without
+  // this the table would keep showing its previous row set until some
+  // unrelated action happened to trigger a render.
   function updateCameraStateLayout() {
     document.body.classList.toggle('camera-scanning', cameraActive);
     refreshOverflowImportAvailability();
+    renderTable();
   }
 
   async function toggleTorch() {
@@ -3456,7 +3551,6 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       } else {
         updateCameraStateLayout();
       }
-      renderTable();
       setStatus('Ready. Tap Start to open the camera. (New session — previous scans cleared.)');
     }
   });
