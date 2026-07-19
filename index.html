@@ -991,7 +991,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
   // ---------------------------------------------------------------
-  // ClassScan — Step 1.3
+  // ClassScan — Step 1.3 (+ v1.4 Step 1 defect fixes)
   // Adds: VisionEngine adapter (GeminiVisionEngine active,
   // AnthropicVisionEngine stub), Settings API-key wiring (in-memory +
   // optional localStorage "remember on this device"), the global
@@ -999,6 +999,17 @@
   // name-QRs (QR overrides vision-read name), the Cards-front vision
   // prompt, and writing scan results into the results table with
   // low-confidence amber flagging.
+  //
+  // v1.4 Step 1 DEFECT FIXES (see comments at each site for detail):
+  //   1. "#" column was incrementing by 2 — a new row spent two ticks
+  //      (acqOrder + updatedAt) instead of one. Fixed in applyVisionResult.
+  //   2. A QR-only card (no printed name) could be discarded entirely as
+  //      "No card detected" if vision reported zero entries for it, even
+  //      though the QR itself decoded fine. Fixed in applyVisionResult:
+  //      a decoded QR now always yields a row, per Blueprint 5a.
+  //   3. An unreadable/fallback name ("(unreadable name)") showed with no
+  //      amber flag. Added nameLowConf to the row schema, table render,
+  //      manual-edit clearing, and the Flags export.
   //
   // SCOPE NOTE: this step decodes/matches ONE QR-code card per photo.
   // True multi-card (up to ~6) discrete capture needs a defined way to
@@ -1010,6 +1021,10 @@
   // Still NOT implemented: roster, Anonymous, Undo, tap-to-edit,
   // Average/Tally/Chart, Link/export, continuous sub-mode, Quiz/
   // Participation prompts. Those buttons still toast.
+  // (Historical note: this scope note predates the later steps in this
+  // same file that DID implement roster/Anonymous/Undo/tap-to-edit/
+  // Average/Tally/Chart — kept as-is since Step 1 only touches the three
+  // defects above, not this comment block's accuracy.)
   // ---------------------------------------------------------------
 
   let toastTimer = null;
@@ -1692,7 +1707,8 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   //   displayName, response, responseLowConf,
   //   conditionBubble, conditionText,      // as read from the last scan
   //   conditionManualValue,                // non-null once hand-edited; overrides bubble/text display
-  //   conditionLowConf
+  //   conditionLowConf,
+  //   nameLowConf                          // true when displayName is a fallback/unreadable value (Blueprint 5a)
   // }
   function computeConditionDisplay(row) {
     if (row.conditionManualValue !== null && row.conditionManualValue !== undefined) {
@@ -1750,6 +1766,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       conditionText: dataRow ? dataRow.conditionText : '',
       conditionManualValue: dataRow ? dataRow.conditionManualValue : null,
       conditionLowConf: dataRow ? dataRow.conditionLowConf : false,
+      nameLowConf: dataRow ? dataRow.nameLowConf : false,
       acqOrder: dataRow ? dataRow.acqOrder : undefined,
       updatedAt: dataRow ? dataRow.updatedAt : undefined,
       hasData: !!dataRow,
@@ -2087,6 +2104,10 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         } else if (col.id === 'name') {
           td.classList.add('name-cell');
           td.textContent = anonymousMode ? getAnonymousCode(row.key) : row.displayName;
+          // DEFECT FIX (v1.4 Step 1, Defect 3): amber-flag a fallback /
+          // unreadable Name cell (Blueprint 5a's unreadable-name amber
+          // rule) — previously nothing flagged this at all.
+          if (row.nameLowConf) td.classList.add('low-confidence');
         } else if (col.id === 'response') {
           td.textContent = row.response;
           if (row.responseLowConf) td.classList.add('low-confidence');
@@ -2318,6 +2339,10 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     if (fieldType === 'name') {
       const newKey = value.toLowerCase();
       row.displayName = value;
+      // DEFECT FIX (v1.4 Step 1, Defect 3): a manual correction of an
+      // unreadable/fallback name is exactly the kind of correction that
+      // should clear the amber flag, same as Response/Condition edits do.
+      row.nameLowConf = false;
       if (newKey !== rowKey) {
         delete tableData[rowKey];
         tableData[newKey] = row;
@@ -2351,11 +2376,34 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   }
 
   function applyVisionResult(result, qrName) {
-    const entries = result.entries || [];
+    let entries = result.entries || [];
 
     if (entries.length === 0) {
-      showToast('No card detected in that photo — try again');
-      return;
+      if (qrName) {
+        // DEFECT FIX (v1.4 Step 1, Defect 2): Blueprint 5a's single-pair
+        // auto-match rule is explicit — "A card with only a QR and no
+        // legible printed name must still resolve to the QR name
+        // WHENEVER THE QR DECODES." Previously, if vision reported zero
+        // cards for the photo (which it can do for a card with nothing
+        // but a QR to anchor a "card" detection on), the whole capture
+        // was silently discarded with a "No card detected" toast — even
+        // though a valid, locally-decoded QR existed. The QR pass itself
+        // was not failing; the bug was that the matching logic required
+        // vision to have reported a card before it would ever consider
+        // using the QR name. Fix: build a single entry from the QR name
+        // instead of bailing out. No fields were actually read from the
+        // card in this case, so Response/Condition are left blank and
+        // marked low-confidence rather than silently presented as
+        // confidently read.
+        entries = [{
+          key: qrName,
+          fields: {},
+          confidence: { response: 'low', conditionBubble: 'low', conditionText: 'low' }
+        }];
+      } else {
+        showToast('No card detected in that photo — try again');
+        return;
+      }
     }
 
     undoSnapshot = cloneTableData(tableData);
@@ -2365,13 +2413,21 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     entries.forEach(entry => {
       let displayName = (entry.key || '').toString().trim();
 
-      // QR-overrides-vision matching (Blueprint Section 5) — only safe to
-      // apply automatically when there's exactly one card in the photo.
+      // QR-overrides-vision matching (Blueprint Section 5a, single-pair
+      // auto-match) — only safe to apply automatically when there's
+      // exactly one card in the photo. This already applies regardless
+      // of whether vision itself managed to read a printed name for
+      // that card (i.e. it does NOT require entry.key to be non-empty).
       if (singleCard && qrName) {
         displayName = qrName;
       }
 
-      if (!displayName) {
+      // DEFECT FIX (v1.4 Step 1, Defect 3): track whether this row's
+      // name is a fallback/unreadable value BEFORE substituting the
+      // placeholder text, so the stored row can carry an accurate
+      // nameLowConf flag (Blueprint 5a's unreadable-name amber rule).
+      const nameUnreadable = !displayName;
+      if (nameUnreadable) {
         displayName = '(unreadable name)';
       }
 
@@ -2387,16 +2443,24 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       const responseLowConf = confidence.response === 'low';
       const conditionLowConf = (confidence.conditionBubble === 'low') || (confidence.conditionText === 'low');
 
-      // A rescan of the same key OVERWRITES the previous row entirely
-      // (Blueprint Section 4), including clearing any prior manual edit
-      // — EXCEPT the "#" (acqOrder): a rescan updates an existing
-      // acquisition, it doesn't create a new one, so that value carries
-      // forward from whatever row (if any) already occupied this key.
-      // updatedAt always gets a fresh tick either way, since a rescan
-      // does count as "just touched" for newest-first default ordering
-      // (Blueprint Section 8a).
+      // DEFECT FIX (v1.4 Step 1, Defect 1): acqOrder and updatedAt used
+      // to each independently call nextActionTick() for a brand-new row
+      // (one call for acqOrder, a second for updatedAt), burning two
+      // ticks per scan and making the "#" column skip by 2 (1, 3, 5…).
+      // A new row's acqOrder and updatedAt must share the SAME tick — the
+      // moment of first creation. Only a RESCAN of an EXISTING row should
+      // consume a fresh tick, and only for updatedAt; acqOrder carries
+      // forward unchanged from whatever row already occupied this key.
       const existingRow = tableData[rowKey];
-      const acqOrder = existingRow ? existingRow.acqOrder : nextActionTick();
+      let acqOrder, updatedAtTick;
+      if (existingRow) {
+        acqOrder = existingRow.acqOrder;
+        updatedAtTick = nextActionTick();
+      } else {
+        const creationTick = nextActionTick();
+        acqOrder = creationTick;
+        updatedAtTick = creationTick;
+      }
 
       tableData[rowKey] = {
         displayName: displayName,
@@ -2406,8 +2470,9 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         conditionText: (fields.conditionText || '').toString().slice(0, 6),
         conditionManualValue: null,
         conditionLowConf: conditionLowConf,
+        nameLowConf: nameUnreadable,
         acqOrder: acqOrder,
-        updatedAt: nextActionTick()
+        updatedAt: updatedAtTick
       };
     });
 
@@ -2436,18 +2501,21 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   }
 
   // Per Blueprint Section 8: "if the table contains >=1 uncorrected
-  // low-confidence cell at export time" — checks Response and
+  // low-confidence cell at export time" — checks Name, Response, and
   // Condition flags across all rows currently in tableData (roster
-  // placeholder rows with no data can't be flagged).
+  // placeholder rows with no data can't be flagged). Name is included
+  // here (v1.4 Step 1) so the Flags export stays consistent with the
+  // amber flag now shown on-screen for an unreadable Name cell.
   function anyLowConfidenceFlags(rows) {
-    return rows.some(r => r.hasData && (r.responseLowConf || r.conditionLowConf));
+    return rows.some(r => r.hasData && (r.nameLowConf || r.responseLowConf || r.conditionLowConf));
   }
 
   // Per-row flag label list for the Flags column, e.g. "Response" or
   // "Response, Condition". Uses the CURRENT on-screen header labels so
   // it stays correct if headers are ever renamed (table v2, later step).
-  function getRowFlagLabels(row, responseHeaderLabel, conditionHeaderLabel) {
+  function getRowFlagLabels(row, nameHeaderLabel, responseHeaderLabel, conditionHeaderLabel) {
     const flags = [];
+    if (row.hasData && row.nameLowConf) flags.push(nameHeaderLabel);
     if (row.hasData && row.responseLowConf) flags.push(responseHeaderLabel);
     if (row.hasData && row.conditionLowConf) flags.push(conditionHeaderLabel);
     return flags.join(', ');
@@ -2514,7 +2582,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       const acqOrderValue = (row.acqOrder !== undefined && row.acqOrder !== null) ? row.acqOrder : '';
       const cells = [acqOrderValue, displayName, row.response];
       if (anyCondition) cells.push(computeConditionDisplay(row));
-      if (anyFlags) cells.push(getRowFlagLabels(row, responseHeader, conditionHeader));
+      if (anyFlags) cells.push(getRowFlagLabels(row, nameHeader, responseHeader, conditionHeader));
       lines.push(cells.map(tsvEscapeCell).join('\t'));
     });
 
