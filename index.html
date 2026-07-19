@@ -887,6 +887,156 @@
   }
 
   // ---------------------------------------------------------------
+  // SHARED QR BURST-DECODE UTILITY (Blueprint Section 6b)
+  //
+  // A single frozen snapshot can be soft/blurry if focus hasn't settled —
+  // unlike a phone's native camera, which continuously scans many frames
+  // and uses whichever one is sharp. This samples a short burst of FRESH
+  // frames from a LIVE (not frozen) video element and stops at the first
+  // successful jsQR decode, instead of judging QR presence from one
+  // instant.
+  //
+  // This is the ONE utility every QR read point in the app must use —
+  // Load List, the future Link destination scan, and the Capture
+  // pipeline's name-QR pass. No per-site bespoke burst logic anywhere
+  // else (Blueprint: "No per-site bespoke patches; one utility, used
+  // everywhere").
+  //
+  // The Capture pipeline has one additional need beyond a decoded
+  // string: it also sends a PHOTO to the vision API, and the sharpest
+  // sampled frame makes a better vision input than an arbitrary single
+  // shot. So this utility also tracks the sharpest frame seen among the
+  // ones actually sampled (bounded by wherever sampling stopped) and
+  // returns it as a detached <canvas> snapshot. Callers that only need
+  // the decoded text (Load List, Link) can simply ignore that part of
+  // the result.
+  // ---------------------------------------------------------------
+  const QR_BURST_MAX_ATTEMPTS = 10;
+  const QR_BURST_INTERVAL_MS = 250; // 9 gaps between 10 samples ≈ 2.25s total, matching Blueprint's "~2 s"
+
+  // Cheap relative sharpness estimate for picking the best frame out of
+  // one burst. Downsamples to a small grayscale copy, then scores focus
+  // via a basic Laplacian-variance measure (higher = more edge energy =
+  // sharper). This is only meant to compare frames from the SAME burst
+  // against each other, not to judge absolute image quality.
+  function estimateFrameSharpness(imageData) {
+    const SAMPLE_MAX_DIM = 120;
+    const srcW = imageData.width;
+    const srcH = imageData.height;
+    const scale = Math.min(1, SAMPLE_MAX_DIM / Math.max(srcW, srcH));
+    const dstW = Math.max(1, Math.round(srcW * scale));
+    const dstH = Math.max(1, Math.round(srcH * scale));
+
+    const gray = new Float32Array(dstW * dstH);
+    const srcData = imageData.data;
+    for (let y = 0; y < dstH; y++) {
+      const sy = Math.min(srcH - 1, Math.floor(y / scale));
+      for (let x = 0; x < dstW; x++) {
+        const sx = Math.min(srcW - 1, Math.floor(x / scale));
+        const si = (sy * srcW + sx) * 4;
+        gray[y * dstW + x] = 0.299 * srcData[si] + 0.587 * srcData[si + 1] + 0.114 * srcData[si + 2];
+      }
+    }
+
+    let sum = 0;
+    let sumSq = 0;
+    let n = 0;
+    for (let y = 1; y < dstH - 1; y++) {
+      for (let x = 1; x < dstW - 1; x++) {
+        const i = y * dstW + x;
+        const lap = 4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - dstW] - gray[i + dstW];
+        sum += lap;
+        sumSq += lap * lap;
+        n++;
+      }
+    }
+
+    if (n === 0) return 0;
+    const mean = sum / n;
+    return (sumSq / n) - (mean * mean); // variance of the Laplacian response
+  }
+
+  /**
+   * Samples up to QR_BURST_MAX_ATTEMPTS fresh frames from a LIVE video
+   * element (never frozen/hidden by this function — callers control
+   * that), spaced QR_BURST_INTERVAL_MS apart, running a local jsQR
+   * decode on each. Stops sampling at the first successful decode.
+   *
+   * @param {HTMLVideoElement} videoEl - live camera video source
+   * @param {HTMLCanvasElement} workCanvas - scratch canvas this function draws into each attempt (should stay hidden/off-screen for the duration; it is safe to reuse the app's existing freeze-canvas here since drawing into a display:none canvas has no visible effect)
+   * @param {Object} [opts]
+   * @param {function(number, number):void} [opts.onRetry] - called as (nextAttemptNumber1Indexed, maxAttempts) right before waiting to sample the next frame, so callers can update a "try N of M" status line the way Load List already does
+   * @returns {Promise<{qrText: string|null, bestCanvas: HTMLCanvasElement|null, attempts: number, cameraNotReady: boolean}>}
+   */
+  async function burstScanQR(videoEl, workCanvas, opts) {
+    opts = opts || {};
+
+    if (!videoEl.videoWidth || !videoEl.videoHeight) {
+      return { qrText: null, bestCanvas: null, attempts: 0, cameraNotReady: true };
+    }
+
+    let qrText = null;
+    let bestSharpness = -1;
+    let bestCanvas = null;
+    let attemptsUsed = 0;
+
+    for (let attempt = 0; attempt < QR_BURST_MAX_ATTEMPTS; attempt++) {
+      attemptsUsed = attempt + 1;
+
+      const w = videoEl.videoWidth;
+      const h = videoEl.videoHeight;
+
+      if (w && h) {
+        workCanvas.width = w;
+        workCanvas.height = h;
+        const ctx = workCanvas.getContext('2d');
+        ctx.drawImage(videoEl, 0, 0, w, h); // video stays live/visible — each attempt grabs a genuinely fresh frame
+
+        let imageData = null;
+        try {
+          imageData = ctx.getImageData(0, 0, w, h);
+        } catch (err) {
+          imageData = null;
+        }
+
+        if (imageData) {
+          const sharpness = estimateFrameSharpness(imageData);
+          if (sharpness > bestSharpness) {
+            bestSharpness = sharpness;
+            // Snapshot into a detached canvas (synchronous, no image decode
+            // needed) so a LATER, less-sharp attempt overwriting workCanvas
+            // can't clobber this one.
+            const snapshot = document.createElement('canvas');
+            snapshot.width = w;
+            snapshot.height = h;
+            snapshot.getContext('2d').drawImage(workCanvas, 0, 0);
+            bestCanvas = snapshot;
+          }
+
+          if (typeof jsQR === 'function') {
+            try {
+              const qrResult = jsQR(imageData.data, imageData.width, imageData.height);
+              if (qrResult && qrResult.data && qrResult.data.trim()) {
+                qrText = qrResult.data.trim();
+                break; // stop sampling at the first successful decode
+              }
+            } catch (err) {
+              // Decode failure on this one frame — just try the next sample.
+            }
+          }
+        }
+      }
+
+      if (attempt < QR_BURST_MAX_ATTEMPTS - 1) {
+        if (opts.onRetry) opts.onRetry(attempt + 2, QR_BURST_MAX_ATTEMPTS);
+        await sleep(QR_BURST_INTERVAL_MS);
+      }
+    }
+
+    return { qrText: qrText, bestCanvas: bestCanvas, attempts: attemptsUsed, cameraNotReady: false };
+  }
+
+  // ---------------------------------------------------------------
   // CARDS-FRONT VISION PROMPT (Blueprint Section 5)
   // ---------------------------------------------------------------
   const CARDS_FRONT_PROMPT = `You are reading a photo of one or more paper response cards used in a classroom.
@@ -1163,57 +1313,27 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     }
     capturing = true;
     setStatus('Reading roster QR code…');
-    attemptRosterScan(0);
-  }
 
-  // A single frozen snapshot can be soft/blurry if focus hasn't settled —
-  // unlike a phone's native camera, which continuously scans many frames
-  // and uses whichever one is sharp. This retries across a short burst of
-  // FRESH frames (video stays live the whole time) instead of judging QR
-  // presence from one instant.
-  const ROSTER_SCAN_MAX_ATTEMPTS = 10;
-  const ROSTER_SCAN_RETRY_DELAY_MS = 250;
-
-  function attemptRosterScan(attemptNumber) {
-    const w = videoEl.videoWidth;
-    const h = videoEl.videoHeight;
-
-    if (!w || !h) {
-      capturing = false;
-      showToast('Camera still starting up — try again in a moment');
-      return;
-    }
-
-    canvasEl.width = w;
-    canvasEl.height = h;
-    const ctx = canvasEl.getContext('2d');
-    ctx.drawImage(videoEl, 0, 0, w, h); // video stays visible/live — each attempt grabs a genuinely fresh frame
-
-    let qrText = null;
-    try {
-      const imageData = ctx.getImageData(0, 0, w, h);
-      const qrResult = jsQR(imageData.data, imageData.width, imageData.height);
-      if (qrResult && qrResult.data && qrResult.data.trim()) {
-        qrText = qrResult.data.trim();
+    burstScanQR(videoEl, canvasEl, {
+      onRetry: function (nextAttempt, maxAttempts) {
+        setStatus('Reading roster QR code… (try ' + nextAttempt + ' of ' + maxAttempts + ')');
       }
-    } catch (err) {
-      qrText = null;
-    }
+    }).then(function (result) {
+      if (result.cameraNotReady) {
+        capturing = false;
+        showToast('Camera still starting up — try again in a moment');
+        return;
+      }
 
-    if (qrText) {
-      finishRosterScan(qrText);
-      return;
-    }
+      if (result.qrText) {
+        finishRosterScan(result.qrText);
+        return;
+      }
 
-    if (attemptNumber < ROSTER_SCAN_MAX_ATTEMPTS - 1) {
-      setStatus('Reading roster QR code… (try ' + (attemptNumber + 2) + ' of ' + ROSTER_SCAN_MAX_ATTEMPTS + ')');
-      setTimeout(() => attemptRosterScan(attemptNumber + 1), ROSTER_SCAN_RETRY_DELAY_MS);
-      return;
-    }
-
-    setStatus('No QR code found after several tries — hold steady, keep it in frame, and try again.');
-    showToast('No QR code detected');
-    capturing = false;
+      setStatus('No QR code found after several tries — hold steady, keep it in frame, and try again.');
+      showToast('No QR code detected');
+      capturing = false;
+    });
   }
 
   function finishRosterScan(qrText) {
@@ -1914,49 +2034,57 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     if (!cameraActive || capturing) return;
     capturing = true;
 
-    const w = videoEl.videoWidth;
-    const h = videoEl.videoHeight;
+    if (typeof jsQR !== 'function') {
+      showToast('QR library failed to load — continuing without QR name-match');
+    }
 
-    if (!w || !h) {
-      // Video not ready yet — bail out gracefully.
+    setStatus('Reading QR code…');
+
+    // Video stays live during sampling (Blueprint Section 6b) — no
+    // freeze here. The freeze happens after the burst, once we know
+    // which sampled frame was sharpest.
+    const burstResult = await burstScanQR(videoEl, canvasEl, {
+      onRetry: function (nextAttempt, maxAttempts) {
+        setStatus('Reading QR code… (try ' + nextAttempt + ' of ' + maxAttempts + ')');
+      }
+    });
+
+    if (burstResult.cameraNotReady) {
       capturing = false;
       showToast('Camera still starting up — try again in a moment');
       return;
     }
 
-    canvasEl.width = w;
-    canvasEl.height = h;
-    const ctx = canvasEl.getContext('2d');
-    ctx.drawImage(videoEl, 0, 0, w, h);
+    if (!burstResult.bestCanvas) {
+      // Extremely unlikely (every sampled frame failed to read as image
+      // data) — treat like any other capture failure rather than leaving
+      // the UI stuck mid-scan.
+      capturing = false;
+      showToast('Could not capture a usable photo — try again');
+      return;
+    }
 
-    // Freeze: show the captured still over the live feed.
+    // Freeze: show the SHARPEST sampled frame as the captured still
+    // (Blueprint Section 6b — this is also the frame sent to vision
+    // below), now that live sampling is done.
+    canvasEl.width = burstResult.bestCanvas.width;
+    canvasEl.height = burstResult.bestCanvas.height;
+    canvasEl.getContext('2d').drawImage(burstResult.bestCanvas, 0, 0);
     canvasEl.style.display = 'block';
     videoEl.style.display = 'none';
-    setStatus('Frame captured — reading QR code…');
+    setStatus('Frame captured…');
 
-    // Local QR pass (jsQR) — decodes at most one QR per photo in this step.
     let qrName = null;
     let rosterQrDetected = false;
-    if (typeof jsQR !== 'function') {
-      showToast('QR library failed to load — continuing without QR name-match');
-    } else {
-      try {
-        const imageData = ctx.getImageData(0, 0, w, h);
-        const qrResult = jsQR(imageData.data, imageData.width, imageData.height);
-        if (qrResult && qrResult.data && qrResult.data.trim()) {
-          const decoded = qrResult.data.trim();
-          if (decoded.startsWith('ROSTER|')) {
-            // A roster QR photographed with the main Capture button, not
-            // Load List. Stop here entirely — don't call vision on a QR
-            // code photo, which would only fail with a confusing "No card
-            // detected" message a moment later.
-            rosterQrDetected = true;
-          } else {
-            qrName = decoded;
-          }
-        }
-      } catch (err) {
-        qrName = null; // QR decode failure just means no override, not fatal.
+    if (burstResult.qrText) {
+      if (burstResult.qrText.startsWith('ROSTER|')) {
+        // A roster QR photographed with the main Capture button, not
+        // Load List. Stop here entirely — don't call vision on a QR
+        // code photo, which would only fail with a confusing "No card
+        // detected" message a moment later.
+        rosterQrDetected = true;
+      } else {
+        qrName = burstResult.qrText;
       }
     }
 
