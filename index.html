@@ -71,6 +71,32 @@
     color: #fff;
   }
 
+  /* Blueprint Section 11: the mode selector "may become a dropdown if
+     vertical space is needed." #mode-selector holds the 3-button row by
+     default; #mode-selector-dropdown is the <select> fallback, hidden
+     unless body.compact-mode-selector is set (see the JS viewport
+     check). Exactly one of the two is visible at a time. */
+  #mode-selector-dropdown {
+    display: none;
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    background: var(--card-bg);
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+
+  body.compact-mode-selector #mode-selector {
+    display: none;
+  }
+
+  body.compact-mode-selector #mode-selector-dropdown {
+    display: block;
+  }
+
   #trial-title-row {
     display: flex;
     align-items: center;
@@ -181,6 +207,28 @@
     padding: 20px 28px;
     border-radius: 12px;
     box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+    text-align: center;
+  }
+
+  /* ---------- SHUTTER BLINK (Blueprint Section 6) ---------- */
+  #shutter-flash {
+    display: none;
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    background: #ffffff;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  #shutter-flash.flash {
+    display: block;
+    animation: shutter-blink 180ms ease-out;
+  }
+
+  @keyframes shutter-blink {
+    0%   { opacity: 0.85; }
+    100% { opacity: 0; }
   }
 
   #status-line {
@@ -192,21 +240,19 @@
     min-height: 20px;
   }
 
-  /* ---------- BUTTON BAR ---------- */
+  /* ---------- BUTTON BAR (Blueprint Sections 8 & 11 — 3-column grid) ---------- */
   #button-bar {
     background: var(--card-bg);
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
     padding: 10px 8px;
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: repeat(4, auto);
     gap: 8px;
-    justify-content: center;
   }
 
   .action-btn {
-    flex: 1 1 30%;
-    min-width: 90px;
     min-height: 52px;
     font-size: 16px;
     font-weight: 600;
@@ -230,6 +276,31 @@
 
   .action-btn.stop-btn { background: var(--red); }
   .action-btn.secondary-btn { background: #5f6368; }
+
+  /* Center column: Stop (row 1), Start (rows 2-3, double-height, same
+     width as every other button since it's one grid column wide, not
+     two), Link (row 4) — per the mockup image, authoritative for this
+     step. */
+  #stop-btn { grid-column: 2; grid-row: 1; }
+  #start-capture-btn {
+    grid-column: 2;
+    grid-row: 2 / span 2;
+    background: var(--green);
+    font-size: 20px;
+  }
+  #link-btn { grid-column: 2; grid-row: 4; }
+
+  /* Left column: Average / Tally / Chart / Copy */
+  #btn-average { grid-column: 1; grid-row: 1; }
+  #btn-tally { grid-column: 1; grid-row: 2; }
+  #btn-chart { grid-column: 1; grid-row: 3; }
+  #btn-copy { grid-column: 1; grid-row: 4; }
+
+  /* Right column: Undo / Load List / Clear List / Reset */
+  #btn-undo { grid-column: 3; grid-row: 1; }
+  #btn-load-list { grid-column: 3; grid-row: 2; }
+  #btn-clear-list { grid-column: 3; grid-row: 3; }
+  #btn-reset { grid-column: 3; grid-row: 4; }
 
   /* ---------- TABLE ---------- */
   #table-wrap {
@@ -631,6 +702,11 @@
       <button class="mode-btn" data-mode="quiz" onclick="selectMode('quiz')">Quiz</button>
       <button class="mode-btn" data-mode="participation" onclick="selectMode('participation')">Participation</button>
     </div>
+    <select id="mode-selector-dropdown" onchange="selectMode(this.value)">
+      <option value="cards">Cards</option>
+      <option value="quiz">Quiz</option>
+      <option value="participation">Participation</option>
+    </select>
 
     <div id="trial-title-row">
       <div id="trial-title">No trial linked — data stays local</div>
@@ -641,6 +717,7 @@
       <button class="toggle-btn" id="submode-toggle" onclick="notReady('Discrete/Continuous switch')">Discrete</button>
       <button class="toggle-btn" id="ghost-toggle" onclick="toggleAnonymous()">👻 Anonymous</button>
       <button class="toggle-btn" id="torch-toggle" onclick="toggleTorch()">🔦 Flashlight</button>
+      <button class="toggle-btn" id="import-toggle" onclick="notReady('📥 PDF Import')">📥 Import</button>
     </div>
   </div>
 
@@ -656,22 +733,26 @@
     </div>
     <video id="camera-video" autoplay playsinline muted></video>
     <canvas id="freeze-canvas"></canvas>
+    <div id="shutter-flash"></div>
     <div id="ready-banner">READY FOR NEXT</div>
   </div>
 
   <!-- ============ BUTTON BAR ============ -->
   <div id="button-bar">
-    <button class="action-btn" id="start-capture-btn" onclick="handleStartCapture()">Start</button>
-    <button class="action-btn stop-btn" id="stop-btn" onclick="stopCamera()">Stop</button>
-    <button class="action-btn secondary-btn" onclick="handleUndo()">Undo</button>
-    <button class="action-btn secondary-btn" onclick="handleCopy()">Copy</button>
     <button class="action-btn secondary-btn" id="btn-average" onclick="handleAverage()">Average</button>
+    <button class="action-btn stop-btn" id="stop-btn" onclick="stopCamera()">Stop</button>
+    <button class="action-btn secondary-btn" id="btn-undo" onclick="handleUndo()">Undo</button>
+
     <button class="action-btn secondary-btn" id="btn-tally" onclick="handleTally()">Tally</button>
+    <button class="action-btn" id="start-capture-btn" onclick="handleStartCapture()">Start</button>
+    <button class="action-btn secondary-btn" id="btn-load-list" onclick="handleLoadList()">Load List</button>
+
     <button class="action-btn secondary-btn" id="btn-chart" onclick="handleChart()">Chart</button>
-    <button class="action-btn secondary-btn" onclick="handleLoadList()">Load List</button>
-    <button class="action-btn secondary-btn" onclick="handleClearList()">Clear List</button>
-    <button class="action-btn secondary-btn" onclick="notReady('Link (export)')">Link</button>
-    <button class="action-btn secondary-btn" onclick="handleReset()">Reset</button>
+    <button class="action-btn secondary-btn" id="btn-clear-list" onclick="handleClearList()">Clear List</button>
+
+    <button class="action-btn secondary-btn" id="btn-copy" onclick="handleCopy()">Copy</button>
+    <button class="action-btn secondary-btn" id="link-btn" onclick="notReady('Link (export)')">Link</button>
+    <button class="action-btn secondary-btn" id="btn-reset" onclick="handleReset()">Reset</button>
   </div>
 
   <!-- ============ RESULTS TABLE ============ -->
@@ -825,6 +906,15 @@
     document.querySelectorAll('.mode-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.mode === mode);
     });
+
+    // Keep the dropdown fallback (Blueprint Section 11) in sync
+    // regardless of which variant is currently visible/was used to
+    // trigger this call, so switching orientation/viewport mid-session
+    // never shows a stale selection.
+    const dropdown = document.getElementById('mode-selector-dropdown');
+    if (dropdown && dropdown.value !== mode) {
+      dropdown.value = mode;
+    }
 
     // Ghost toggle only exists in Cards mode (per Blueprint Section 8)
     const ghostToggle = document.getElementById('ghost-toggle');
@@ -2439,6 +2529,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     canvasEl.getContext('2d').drawImage(burstResult.bestCanvas, 0, 0);
     canvasEl.style.display = 'block';
     videoEl.style.display = 'none';
+    triggerShutterBlink();
     setStatus('Frame captured…');
 
     let qrName = null;
@@ -2526,6 +2617,20 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       showToast(msg);
       resumeLiveView(false);
     }
+  }
+
+  const shutterFlashEl = document.getElementById('shutter-flash');
+
+  // Brief white blink over the captured still, at the moment the shot is
+  // actually taken (Blueprint Section 6: "shutter feedback: brief
+  // preview blink"). Re-triggering the CSS animation on rapid repeat
+  // taps requires forcing a reflow between removing and re-adding the
+  // class, or the browser just no-ops the second animation.
+  function triggerShutterBlink() {
+    if (!shutterFlashEl) return;
+    shutterFlashEl.classList.remove('flash');
+    void shutterFlashEl.offsetWidth; // force reflow so the animation restarts cleanly
+    shutterFlashEl.classList.add('flash');
   }
 
   function resumeLiveView(showBanner) {
@@ -2627,8 +2732,27 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     document.getElementById('settings-screen').style.display = 'none';
   }
 
+  // ---- Mode selector responsiveness (Blueprint Section 8 & 11) ----
+  // "Mode selector ... may become a dropdown if vertical space is
+  // needed" and "the newest table row must be visible without
+  // scrolling while scanning (shrink secondary controls as required)."
+  // The 3-button row costs real vertical space versus a single-line
+  // <select>; below a rough short-phone-in-portrait threshold, swap to
+  // the dropdown to give the camera/table area more room. Re-checked on
+  // resize/orientation change, not just once at load.
+  const COMPACT_MODE_SELECTOR_HEIGHT_PX = 650;
+
+  function updateModeSelectorLayout() {
+    const compact = window.innerHeight < COMPACT_MODE_SELECTOR_HEIGHT_PX;
+    document.body.classList.toggle('compact-mode-selector', compact);
+  }
+
+  window.addEventListener('resize', updateModeSelectorLayout);
+  window.addEventListener('orientationchange', updateModeSelectorLayout);
+
   // ---- Init ----
   loadSavedApiKey();
+  updateModeSelectorLayout();
 
   // ---------------------------------------------------------------
   // SESSION ISOLATION (Blueprint Section 4)
