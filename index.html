@@ -898,6 +898,113 @@
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
+
+  /* ---------- DESKTOP RESPONSIVE LAYOUT (Blueprint Section 11a) ----------
+     One responsive index.html, no separate desktop file. Below the
+     breakpoint, #camera-column is display:contents — it renders as if
+     it didn't exist, so status-line/middle-area/button-bar stack as
+     direct #app flex children exactly as they did before this step.
+     Above the breakpoint, #app becomes a 2-column grid: a fixed,
+     phone-proportioned camera/controls column on the left (so buttons
+     never stretch to fill a wide screen) and the table claiming the
+     rest of the width — desktop's primary use case per Section 11a is
+     batch 📥 Import and grading review, both table-centric. */
+  #camera-column {
+    display: contents;
+  }
+
+  #desktop-import-btn {
+    display: none; /* phone: 📥 stays in the ⋯ menu only, per Section 8 */
+  }
+
+  @media (min-width: 900px) {
+    #app {
+      display: grid;
+      grid-template-columns: 400px 1fr;
+      grid-template-rows: auto 1fr;
+      grid-template-areas:
+        "topbar topbar"
+        "camera table";
+      max-width: 1600px;
+      width: 100%;
+      margin: 0 auto;
+      min-height: 100vh;
+    }
+
+    #top-bar {
+      grid-area: topbar;
+    }
+
+    #camera-column {
+      display: flex;
+      flex-direction: column;
+      grid-area: camera;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    #table-wrap {
+      grid-area: table;
+      min-height: 0;
+    }
+
+    /* Blueprint 11a: "📥 Import is prominent when no camera is active."
+       Hidden again while scanning via the same body.camera-scanning
+       class every other state-dependent rule already uses. */
+    #desktop-import-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: calc(100% - 16px);
+      margin: 8px;
+      padding: 14px;
+      font-size: 15px;
+      font-weight: 700;
+      text-align: center;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    #desktop-import-btn:active {
+      filter: brightness(0.9);
+    }
+
+    body.camera-scanning #desktop-import-btn {
+      display: none;
+    }
+
+    /* Readable text at desktop viewing distance/width, and enough
+       breathing room that the now-dominant table doesn't feel like a
+       cramped mobile list. */
+    table {
+      font-size: 16px;
+    }
+
+    thead th,
+    tbody td {
+      padding: 12px 14px;
+    }
+
+    #trial-title {
+      font-size: 15px;
+    }
+  }
+
+  /* ---- Keyboard focus for the mouse/keyboard-equivalent interactions
+     added to table cells/headers below (Section 11a) — only shown for
+     genuine keyboard navigation (:focus-visible), so tap/click/touch
+     use on phones is visually unaffected. ---- */
+  .editable-cell:focus-visible,
+  .deletable-cell:focus-visible,
+  .header-cell:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: -2px;
+  }
 </style>
 </head>
 <body>
@@ -926,46 +1033,62 @@
     </div>
   </div>
 
-  <!-- ============ STATUS LINE ============ -->
-  <div id="status-line"><span id="status-text">Ready. Tap Start to open the camera. (QR reading and AI analysis are not connected yet.)</span></div>
+  <!-- ============ CAMERA COLUMN (Blueprint Section 11a) ============
+       Groups status-line + middle-area + button-bar so desktop widths
+       can lay them out as a fixed-width left column next to the table.
+       #camera-column is display:contents by default (see CSS), so at
+       phone widths these three render exactly as direct #app children,
+       same as before this step — zero mobile-layout change. -->
+  <div id="camera-column">
 
-  <!-- ============ MIDDLE / CAMERA AREA ============ -->
-  <div id="middle-area">
-    <div id="camera-placeholder">
-      📷<br>
-      Camera preview will appear here.<br>
-      Tap "Start" below to begin.
+    <!-- 📥 Import call-to-action — desktop-only (hidden by default,
+         hidden again while the camera is scanning), Blueprint 11a:
+         "📥 Import is prominent when no camera is active." Same
+         handler as the ⋯ menu's Import item — still a stub. -->
+    <button id="desktop-import-btn" onclick="handleOverflowImport()">📥 Import PDF — batch grading &amp; review</button>
+
+    <!-- ============ STATUS LINE ============ -->
+    <div id="status-line"><span id="status-text">Ready. Tap Start to open the camera. (QR reading and AI analysis are not connected yet.)</span></div>
+
+    <!-- ============ MIDDLE / CAMERA AREA ============ -->
+    <div id="middle-area">
+      <div id="camera-placeholder">
+        📷<br>
+        Camera preview will appear here.<br>
+        Tap "Start" below to begin.
+      </div>
+      <video id="camera-video" autoplay playsinline muted></video>
+      <canvas id="freeze-canvas"></canvas>
+      <div id="shutter-flash"></div>
+      <div id="ready-banner">READY FOR NEXT</div>
+
+      <!-- Camera-preview overlays (Blueprint Section 11) — tier badge,
+           flashlight, Discrete/Continuous. Zero vertical-space cost since
+           they float on top of the preview instead of sitting in a
+           dedicated row. -->
+      <button id="tier-indicator" class="preview-overlay-btn tier-free" onclick="handleTierBadgeTap()">FREE</button>
+      <button class="preview-overlay-btn" id="torch-toggle" onclick="toggleTorch()">🔦 Flashlight</button>
+      <button class="preview-overlay-btn" id="submode-toggle" onclick="notReady('Discrete/Continuous switch')">Discrete</button>
     </div>
-    <video id="camera-video" autoplay playsinline muted></video>
-    <canvas id="freeze-canvas"></canvas>
-    <div id="shutter-flash"></div>
-    <div id="ready-banner">READY FOR NEXT</div>
 
-    <!-- Camera-preview overlays (Blueprint Section 11) — tier badge,
-         flashlight, Discrete/Continuous. Zero vertical-space cost since
-         they float on top of the preview instead of sitting in a
-         dedicated row. -->
-    <button id="tier-indicator" class="preview-overlay-btn tier-free" onclick="handleTierBadgeTap()">FREE</button>
-    <button class="preview-overlay-btn" id="torch-toggle" onclick="toggleTorch()">🔦 Flashlight</button>
-    <button class="preview-overlay-btn" id="submode-toggle" onclick="notReady('Discrete/Continuous switch')">Discrete</button>
-  </div>
+    <!-- ============ BUTTON BAR ============ -->
+    <div id="button-bar">
+      <button class="action-btn secondary-btn" id="btn-average" onclick="handleAverage()">Average</button>
+      <button class="action-btn stop-btn" id="stop-btn" onclick="stopCamera()">Stop</button>
+      <button class="action-btn secondary-btn" id="btn-undo" onclick="handleUndo()">Undo</button>
 
-  <!-- ============ BUTTON BAR ============ -->
-  <div id="button-bar">
-    <button class="action-btn secondary-btn" id="btn-average" onclick="handleAverage()">Average</button>
-    <button class="action-btn stop-btn" id="stop-btn" onclick="stopCamera()">Stop</button>
-    <button class="action-btn secondary-btn" id="btn-undo" onclick="handleUndo()">Undo</button>
+      <button class="action-btn secondary-btn" id="btn-tally" onclick="handleTally()">Tally</button>
+      <button class="action-btn" id="start-capture-btn" onclick="handleStartCapture()">Start</button>
+      <button class="action-btn secondary-btn" id="btn-load-list" onclick="handleLoadList()">Load List</button>
 
-    <button class="action-btn secondary-btn" id="btn-tally" onclick="handleTally()">Tally</button>
-    <button class="action-btn" id="start-capture-btn" onclick="handleStartCapture()">Start</button>
-    <button class="action-btn secondary-btn" id="btn-load-list" onclick="handleLoadList()">Load List</button>
+      <button class="action-btn secondary-btn" id="btn-chart" onclick="handleChart()">Chart</button>
+      <button class="action-btn secondary-btn" id="btn-clear-list" onclick="handleClearList()">Clear List</button>
 
-    <button class="action-btn secondary-btn" id="btn-chart" onclick="handleChart()">Chart</button>
-    <button class="action-btn secondary-btn" id="btn-clear-list" onclick="handleClearList()">Clear List</button>
+      <button class="action-btn secondary-btn" id="btn-copy" onclick="handleCopy()">Copy</button>
+      <button class="action-btn secondary-btn" id="link-btn" onclick="notReady('Link (export)')">Link</button>
+      <button class="action-btn secondary-btn" id="btn-reset" onclick="handleReset()">Reset</button>
+    </div>
 
-    <button class="action-btn secondary-btn" id="btn-copy" onclick="handleCopy()">Copy</button>
-    <button class="action-btn secondary-btn" id="link-btn" onclick="notReady('Link (export)')">Link</button>
-    <button class="action-btn secondary-btn" id="btn-reset" onclick="handleReset()">Reset</button>
   </div>
 
   <!-- ============ RESULTS TABLE ============ -->
@@ -1993,6 +2116,13 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // preview). Movement past a small tolerance cancels the pending
   // long-press — the table area scrolls, and a scroll gesture starting
   // on a cell shouldn't be misread as a long-press.
+  //
+  // Blueprint Section 11a adds mouse/keyboard equivalents on top of the
+  // above, for every cell/header that already goes through this one
+  // function: tabIndex makes it Tab-reachable; Enter/Space mirrors a
+  // click; right-click AND its native keyboard equivalent (Shift+F10 /
+  // the Menu key) both fire the same 'contextmenu' event, so one
+  // listener covers mouse and keyboard for the long-press action too.
   function attachLongPress(el, options) {
     const thresholdMs = options.thresholdMs || 550;
     const moveTolerancePx = 10;
@@ -2007,6 +2137,8 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         timer = null;
       }
     }
+
+    el.tabIndex = 0;
 
     el.addEventListener('pointerdown', (e) => {
       if (e.button !== undefined && e.button !== 0) return; // primary button/touch only
@@ -2044,6 +2176,21 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         return;
       }
       if (options.onClick) options.onClick();
+    });
+
+    // Keyboard equivalent of a tap (Section 11a).
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault(); // Space shouldn't also scroll the page
+        if (options.onClick) options.onClick();
+      }
+    });
+
+    // Mouse/keyboard equivalent of a long-press (Section 11a): right-
+    // click and Shift+F10/Menu-key both fire 'contextmenu' natively.
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (options.onLongPress) options.onLongPress();
     });
   }
 
@@ -2186,15 +2333,21 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
+        e.stopPropagation(); // don't also reach the th's own keydown (Section 11a keyboard-sort)
         input.blur();
       } else if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
         cancel();
       }
     });
     // Don't let taps inside the input bubble up to the header's own
     // click-to-sort handler while renaming.
     input.addEventListener('click', (e) => e.stopPropagation());
+    // Same for right-click/keyboard context-menu — otherwise it would
+    // trigger the th's rename-again handler instead of the browser's
+    // normal text-field context menu (paste, etc.) while renaming.
+    input.addEventListener('contextmenu', (e) => e.stopPropagation());
   }
 
   function finishHeaderRename(columnId, defaultLabel, rawValue) {
@@ -2536,15 +2689,21 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
+        e.stopPropagation(); // don't also reach the td's own keydown (Section 11a keyboard-edit)
         input.blur(); // triggers commit via the blur handler above
       } else if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
         cancel();
       }
     });
     // Don't let taps inside the input bubble up to the cell's own
     // long-press/click wiring.
     input.addEventListener('click', (e) => e.stopPropagation());
+    // Same for right-click/keyboard context-menu — otherwise it would
+    // trigger the td's delete-row confirmation instead of the browser's
+    // normal text-field context menu (paste, etc.) while editing.
+    input.addEventListener('contextmenu', (e) => e.stopPropagation());
   }
 
   function finishCellEdit(rowKey, fieldType, rawValue) {
