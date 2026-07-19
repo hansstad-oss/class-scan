@@ -332,9 +332,9 @@
     border-bottom: 1px solid var(--border);
   }
 
-  tbody tr.row-red td:first-child { background-color: rgba(217, 48, 37, 0.18); }
-  tbody tr.row-green td:first-child { background-color: rgba(30, 142, 62, 0.18); }
-  tbody tr.row-yellow td:first-child { background-color: rgba(249, 171, 0, 0.28); }
+  tbody tr.row-red td.name-cell { background-color: rgba(217, 48, 37, 0.18); }
+  tbody tr.row-green td.name-cell { background-color: rgba(30, 142, 62, 0.18); }
+  tbody tr.row-yellow td.name-cell { background-color: rgba(249, 171, 0, 0.28); }
 
   .low-confidence {
     background: #fff3cd;
@@ -349,10 +349,30 @@
 
   .editable-cell {
     cursor: pointer;
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   .editable-cell:active {
     background: #e8f0fe;
+  }
+
+  /* Non-editable data cells (currently just #) still need long-press-to-
+     delete (Blueprint Section 8a: "long-press any data cell"), so they
+     need the same touch-callout/selection suppression as editable
+     cells, just without the pointer cursor or click-to-edit affordance. */
+  .deletable-cell {
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .col-acqorder {
+    width: 44px;
+    text-align: center;
   }
 
   .cell-edit-input {
@@ -365,11 +385,106 @@
     box-sizing: border-box;
   }
 
+  /* ---------- SORTABLE / RENAMEABLE HEADERS (Blueprint Section 8a) ---------- */
+  .header-cell {
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .header-cell:active {
+    background: #12539e;
+  }
+
+  .sort-arrow {
+    font-size: 11px;
+    margin-left: 2px;
+  }
+
+  .header-edit-input {
+    width: 100%;
+    font-size: 15px;
+    font-family: inherit;
+    font-weight: 600;
+    padding: 4px 6px;
+    border: 2px solid #fff;
+    border-radius: 6px;
+    box-sizing: border-box;
+    background: #fff;
+    color: var(--text);
+  }
+
   #empty-state {
     padding: 40px 20px;
     text-align: center;
     color: var(--grey);
     font-size: 15px;
+  }
+
+  /* ---------- DELETE ROW CONFIRM DIALOG (Blueprint Section 8a) ---------- */
+  #delete-row-dialog {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 300;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #delete-row-dialog.show {
+    display: flex;
+  }
+
+  #delete-row-dialog-inner {
+    background: #ffffff;
+    width: 84%;
+    max-width: 340px;
+    border-radius: 16px;
+    padding: 22px 20px;
+    text-align: center;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+  }
+
+  #delete-row-dialog-inner h3 {
+    margin: 0 0 8px 0;
+    font-size: 19px;
+    color: var(--text);
+  }
+
+  #delete-row-dialog-inner p {
+    margin: 0 0 18px 0;
+    font-size: 14px;
+    color: #5f6368;
+    line-height: 1.4;
+  }
+
+  #delete-row-dialog-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .delete-row-btn {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 700;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  #delete-row-cancel-btn {
+    background: #f1f3f4;
+    color: var(--text);
+  }
+
+  #delete-row-confirm-btn {
+    background: var(--red);
+    color: #fff;
   }
 
   /* ---------- RESULTS MODAL (Average / Tally / Chart) ---------- */
@@ -796,6 +911,18 @@
     <div id="rate-limit-dialog-buttons">
       <button id="rate-limit-wait-btn" class="rate-limit-btn" onclick="handleRateLimitWait()">Wait</button>
       <button id="rate-limit-turbo-btn" class="rate-limit-btn" onclick="handleRateLimitTurbo()">💲 Turbo</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DELETE ROW DIALOG (Blueprint Section 8a) ============ -->
+<div id="delete-row-dialog">
+  <div id="delete-row-dialog-inner">
+    <h3>Delete this row?</h3>
+    <p id="delete-row-dialog-message"></p>
+    <div id="delete-row-dialog-buttons">
+      <button id="delete-row-cancel-btn" class="delete-row-btn" onclick="handleDeleteRowCancel()">Cancel</button>
+      <button id="delete-row-confirm-btn" class="delete-row-btn" onclick="handleDeleteRowConfirm()">Delete</button>
     </div>
   </div>
 </div>
@@ -1533,6 +1660,27 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   let anonymousMode = false; // Cards-only, default OFF (Blueprint Section 8)
   let anonymousMap = {}; // key: lowercased trimmed name -> stable 3-digit code
 
+  // ---- Table v2 state (Blueprint Section 8a) ----
+  // sortState: null = default layout (scanned block newest-first, red
+  // roster rows below, alphabetical). {column, direction} once a header
+  // has been tapped to sort explicitly.
+  let sortState = null;
+  // headerLabels: columnId -> custom display text, absent = use the
+  // column's default label. Populated by long-press-to-rename; read by
+  // renderTable() and by Copy's export (Link will read it too once built).
+  let headerLabels = {};
+  // Single monotonic counter serving two purposes on a row: acqOrder
+  // (the tick value AT FIRST CREATION, frozen forever after — this is
+  // the "#" column) and updatedAt (the tick value bumped on EVERY
+  // touch — create, rescan, or manual edit — used to sort the "newest
+  // first" default block). Never rolled back on Undo/delete, so # never
+  // collides even though gaps can appear — same behavior any spreadsheet
+  // row-ID column would have after a delete.
+  let sessionActionCounter = 0;
+  function nextActionTick() {
+    return ++sessionActionCounter;
+  }
+
   function cloneTableData(data) {
     // Plain-data object of strings/booleans — a JSON round-trip is a safe,
     // simple deep clone here.
@@ -1602,11 +1750,269 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       conditionText: dataRow ? dataRow.conditionText : '',
       conditionManualValue: dataRow ? dataRow.conditionManualValue : null,
       conditionLowConf: dataRow ? dataRow.conditionLowConf : false,
+      acqOrder: dataRow ? dataRow.acqOrder : undefined,
+      updatedAt: dataRow ? dataRow.updatedAt : undefined,
       hasData: !!dataRow,
       status: getRowStatus(key)
     };
   }
 
+  // ---- Long-press helper (Blueprint Section 8a) ----
+  // Shared by every interactive cell/header in the table: a normal tap
+  // fires onClick, holding past the threshold fires onLongPress instead
+  // and suppresses the synthetic click browsers still send after a long
+  // touch-hold. Pointer events unify mouse+touch, both relevant here
+  // (phone in the field, desktop Chrome for testing/GitHub Pages
+  // preview). Movement past a small tolerance cancels the pending
+  // long-press — the table area scrolls, and a scroll gesture starting
+  // on a cell shouldn't be misread as a long-press.
+  function attachLongPress(el, options) {
+    const thresholdMs = options.thresholdMs || 550;
+    const moveTolerancePx = 10;
+    let timer = null;
+    let startX = 0;
+    let startY = 0;
+    let longPressFired = false;
+
+    function clearTimer() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== undefined && e.button !== 0) return; // primary button/touch only
+      longPressFired = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      clearTimer();
+      timer = setTimeout(() => {
+        timer = null;
+        longPressFired = true;
+        if (options.onLongPress) options.onLongPress();
+      }, thresholdMs);
+    });
+
+    el.addEventListener('pointermove', (e) => {
+      if (!timer) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (Math.sqrt(dx * dx + dy * dy) > moveTolerancePx) {
+        clearTimer(); // looks like a scroll/drag, not a long-press
+      }
+    });
+
+    el.addEventListener('pointerup', clearTimer);
+    el.addEventListener('pointercancel', clearTimer);
+    el.addEventListener('pointerleave', clearTimer);
+
+    el.addEventListener('click', (e) => {
+      if (longPressFired) {
+        // A long-press already fired for this gesture — swallow the
+        // trailing synthetic click so it doesn't ALSO trigger onClick.
+        longPressFired = false;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (options.onClick) options.onClick();
+    });
+  }
+
+  // ---- Row ordering / sorting (Blueprint Section 8a) ----
+
+  // Direction-aware alphabetical fallback, used both as the red-block's
+  // own ordering and as a tiebreaker so ties elsewhere don't fall back
+  // to incidental object-key insertion order.
+  function compareByNameFallback(a, b, ascending) {
+    const av = anonymousMode ? getAnonymousCode(a.key) : a.displayName;
+    const bv = anonymousMode ? getAnonymousCode(b.key) : b.displayName;
+    const cmp = av.localeCompare(bv, undefined, { sensitivity: 'base' });
+    return ascending ? cmp : -cmp;
+  }
+
+  // Numeric-if-possible compare for Response, since Cards responses are
+  // frequently numbers but can also be letters/Yes-No/short words.
+  function smartCompareValues(a, b) {
+    const na = parseFloat(a);
+    const nb = parseFloat(b);
+    const aIsNum = a !== '' && !isNaN(na) && isFinite(na) && String(na) === String(a).trim();
+    const bIsNum = b !== '' && !isNaN(nb) && isFinite(nb) && String(nb) === String(b).trim();
+    if (aIsNum && bIsNum) return na - nb;
+    return (a || '').localeCompare(b || '', undefined, { sensitivity: 'base' });
+  }
+
+  function compareRowsByColumn(a, b, columnId, ascending) {
+    if (columnId === 'acqOrder') {
+      const av = a.acqOrder;
+      const bv = b.acqOrder;
+      const aNull = (av === undefined || av === null);
+      const bNull = (bv === undefined || bv === null);
+      // Rows with no # (unscanned roster placeholders) always sort to
+      // the end, in EITHER direction — "no acquisition order" isn't a
+      // value that meaningfully flips with ascending/descending.
+      if (aNull && bNull) return compareByNameFallback(a, b, ascending);
+      if (aNull) return 1;
+      if (bNull) return -1;
+      const cmp = av - bv;
+      const directional = ascending ? cmp : -cmp;
+      return directional !== 0 ? directional : compareByNameFallback(a, b, ascending);
+    }
+
+    let cmp;
+    if (columnId === 'name') {
+      const av = anonymousMode ? getAnonymousCode(a.key) : a.displayName;
+      const bv = anonymousMode ? getAnonymousCode(b.key) : b.displayName;
+      cmp = av.localeCompare(bv, undefined, { sensitivity: 'base' });
+    } else if (columnId === 'response') {
+      cmp = smartCompareValues(a.response, b.response);
+    } else if (columnId === 'condition') {
+      cmp = computeConditionDisplay(a).localeCompare(computeConditionDisplay(b), undefined, { sensitivity: 'base' });
+    } else {
+      cmp = 0;
+    }
+    const directional = ascending ? cmp : -cmp;
+    return directional !== 0 ? directional : compareByNameFallback(a, b, ascending);
+  }
+
+  // The single source of truth for "what order are rows in right now" —
+  // renderTable() and Copy/Average/Tally/Chart (via getSortedDisplayRows,
+  // below) both call this so the export and the on-screen table can
+  // never disagree.
+  function getOrderedRows() {
+    const rows = getAllRowKeys().map(buildDisplayRow);
+
+    if (sortState) {
+      return rows.sort((a, b) => compareRowsByColumn(a, b, sortState.column, sortState.direction === 'asc'));
+    }
+
+    // Default layout (Blueprint Section 7): scanned rows in a
+    // newest-first block on top, unscanned (red) roster rows below,
+    // alphabetical, without a # until scanned.
+    const withData = rows.filter(r => r.hasData);
+    const withoutData = rows.filter(r => !r.hasData);
+    withData.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    withoutData.sort((a, b) => compareByNameFallback(a, b, true));
+    return withData.concat(withoutData);
+  }
+
+  function handleHeaderSortClick(columnId) {
+    if (sortState && sortState.column === columnId) {
+      sortState = { column: columnId, direction: sortState.direction === 'asc' ? 'desc' : 'asc' };
+    } else {
+      sortState = { column: columnId, direction: 'asc' };
+    }
+    renderTable();
+  }
+
+  function getColumnLabel(columnId, defaultLabel) {
+    return headerLabels[columnId] || defaultLabel;
+  }
+
+  // ---- Header long-press-to-rename (Blueprint Section 8a) ----
+  function startHeaderRename(th, columnId, defaultLabel) {
+    if (th.querySelector('input')) return; // already renaming this header
+
+    const currentLabel = getColumnLabel(columnId, defaultLabel);
+    th.innerHTML = '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'header-edit-input';
+    input.value = currentLabel;
+    th.appendChild(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+
+    function commit() {
+      if (settled) return;
+      settled = true;
+      finishHeaderRename(columnId, defaultLabel, input.value);
+    }
+
+    function cancel() {
+      if (settled) return;
+      settled = true;
+      renderTable();
+    }
+
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    // Don't let taps inside the input bubble up to the header's own
+    // click-to-sort handler while renaming.
+    input.addEventListener('click', (e) => e.stopPropagation());
+  }
+
+  function finishHeaderRename(columnId, defaultLabel, rawValue) {
+    const value = rawValue.trim();
+    if (!value) {
+      showToast('Header cannot be blank');
+      renderTable();
+      return;
+    }
+    if (value === defaultLabel) {
+      delete headerLabels[columnId]; // explicitly back to default
+    } else {
+      headerLabels[columnId] = value;
+    }
+    renderTable();
+  }
+
+  // ---- Delete row (Blueprint Section 8a: long-press a data cell) ----
+  let deleteRowDialogResolve = null;
+
+  function showDeleteRowConfirm(rowLabel) {
+    document.getElementById('delete-row-dialog-message').textContent = 'This removes "' + rowLabel + '" and its data from the table.';
+    document.getElementById('delete-row-dialog').classList.add('show');
+    return new Promise(resolve => {
+      deleteRowDialogResolve = resolve;
+    });
+  }
+
+  function hideDeleteRowDialog() {
+    document.getElementById('delete-row-dialog').classList.remove('show');
+  }
+
+  function handleDeleteRowCancel() {
+    hideDeleteRowDialog();
+    if (deleteRowDialogResolve) {
+      const resolve = deleteRowDialogResolve;
+      deleteRowDialogResolve = null;
+      resolve(false);
+    }
+  }
+
+  function handleDeleteRowConfirm() {
+    hideDeleteRowDialog();
+    if (deleteRowDialogResolve) {
+      const resolve = deleteRowDialogResolve;
+      deleteRowDialogResolve = null;
+      resolve(true);
+    }
+  }
+
+  async function confirmDeleteRow(rowKey) {
+    const row = tableData[rowKey];
+    if (!row) return; // stale reference (e.g. already removed by another action)
+    const confirmed = await showDeleteRowConfirm(row.displayName);
+    if (!confirmed) return;
+    undoSnapshot = cloneTableData(tableData);
+    delete tableData[rowKey];
+    renderTable();
+    showToast('Row deleted');
+  }
+
+  // ---- Main table render (Blueprint Sections 7 & 8a — table v2) ----
   function renderTable() {
     const allKeys = getAllRowKeys();
     const tbody = document.getElementById('table-body');
@@ -1615,47 +2021,94 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 
     if (allKeys.length === 0) {
       tbody.innerHTML = '';
+      headerRow.innerHTML = '';
       emptyState.style.display = 'block';
       return;
     }
     emptyState.style.display = 'none';
 
-    const rows = allKeys.map(buildDisplayRow);
-    const anyCondition = rows.some(r => computeConditionDisplay(r) !== '');
+    const previewRows = allKeys.map(buildDisplayRow);
+    const anyCondition = previewRows.some(r => computeConditionDisplay(r) !== '');
 
-    headerRow.innerHTML = '<th>Name</th><th>Response</th>' + (anyCondition ? '<th>Condition</th>' : '');
+    const columns = [
+      { id: 'acqOrder', defaultLabel: '#', editable: false },
+      { id: 'name', defaultLabel: 'Name', editable: true },
+      { id: 'response', defaultLabel: 'Response', editable: true }
+    ];
+    if (anyCondition) {
+      columns.push({ id: 'condition', defaultLabel: 'Condition', editable: true });
+    }
 
-    rows.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }));
+    const orderedRows = getOrderedRows();
 
+    // ---- Header row ----
+    headerRow.innerHTML = '';
+    columns.forEach(col => {
+      const th = document.createElement('th');
+      th.classList.add('header-cell');
+      if (col.id === 'acqOrder') th.classList.add('col-acqorder');
+
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = getColumnLabel(col.id, col.defaultLabel);
+      th.appendChild(labelSpan);
+
+      if (sortState && sortState.column === col.id) {
+        const arrow = document.createElement('span');
+        arrow.className = 'sort-arrow';
+        arrow.textContent = sortState.direction === 'asc' ? '\u25B2' : '\u25BC';
+        th.appendChild(arrow);
+      }
+
+      attachLongPress(th, {
+        onClick: () => {
+          if (th.querySelector('input')) return; // currently renaming — don't also sort
+          handleHeaderSortClick(col.id);
+        },
+        onLongPress: () => startHeaderRename(th, col.id, col.defaultLabel)
+      });
+
+      headerRow.appendChild(th);
+    });
+
+    // ---- Body rows ----
     tbody.innerHTML = '';
-    rows.forEach(row => {
+    orderedRows.forEach(row => {
       const tr = document.createElement('tr');
       if (row.status === 'red') tr.classList.add('row-red');
       else if (row.status === 'green') tr.classList.add('row-green');
       else if (row.status === 'yellow') tr.classList.add('row-yellow');
 
-      const nameTd = document.createElement('td');
-      nameTd.textContent = anonymousMode ? getAnonymousCode(row.key) : row.displayName;
-      // Editing a placeholder (unscanned roster) row or an anonymized
-      // code has no sensible meaning — only editable once real data exists.
-      if (!anonymousMode && row.hasData) {
-        makeEditable(nameTd, row.key, 'name');
-      }
-      tr.appendChild(nameTd);
+      columns.forEach(col => {
+        const td = document.createElement('td');
 
-      const responseTd = document.createElement('td');
-      responseTd.textContent = row.response;
-      if (row.responseLowConf) responseTd.classList.add('low-confidence');
-      if (row.hasData) makeEditable(responseTd, row.key, 'response');
-      tr.appendChild(responseTd);
+        if (col.id === 'acqOrder') {
+          td.classList.add('col-acqorder');
+          td.textContent = (row.acqOrder !== undefined && row.acqOrder !== null) ? String(row.acqOrder) : '';
+        } else if (col.id === 'name') {
+          td.classList.add('name-cell');
+          td.textContent = anonymousMode ? getAnonymousCode(row.key) : row.displayName;
+        } else if (col.id === 'response') {
+          td.textContent = row.response;
+          if (row.responseLowConf) td.classList.add('low-confidence');
+        } else if (col.id === 'condition') {
+          td.textContent = computeConditionDisplay(row);
+          if (row.conditionLowConf) td.classList.add('low-confidence');
+        }
 
-      if (anyCondition) {
-        const conditionTd = document.createElement('td');
-        conditionTd.textContent = computeConditionDisplay(row);
-        if (row.conditionLowConf) conditionTd.classList.add('low-confidence');
-        if (row.hasData) makeEditable(conditionTd, row.key, 'condition');
-        tr.appendChild(conditionTd);
-      }
+        // Tap-to-edit and long-press-to-delete both only make sense once
+        // real data exists — an unscanned roster placeholder has nothing
+        // to edit or delete (same restriction the table already had).
+        if (row.hasData) {
+          const canEdit = col.editable && !(col.id === 'name' && anonymousMode);
+          attachLongPress(td, {
+            onClick: canEdit ? () => startCellEdit(td, row.key, col.id) : null,
+            onLongPress: () => confirmDeleteRow(row.key)
+          });
+          td.classList.add(canEdit ? 'editable-cell' : 'deletable-cell');
+        }
+
+        tr.appendChild(td);
+      });
 
       tbody.appendChild(tr);
     });
@@ -1785,6 +2238,9 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     undoSnapshot = null;
     anonymousMode = false;
     anonymousMap = {};
+    sortState = null; // table v2: back to default newest-first/roster-block layout
+    headerLabels = {}; // table v2: renamed headers restore to defaults (Blueprint Section 8a)
+    sessionActionCounter = 0; // "#" is cleared with the table (Blueprint Section 8a)
     const ghostToggle = document.getElementById('ghost-toggle');
     if (ghostToggle) ghostToggle.classList.remove('on');
     closeResultsModal(); // avoid showing a stale Average/Tally/Chart view after Reset
@@ -1794,11 +2250,6 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   }
 
   // ---- Tap-to-edit (Blueprint Section 8) ----
-  function makeEditable(td, rowKey, fieldType) {
-    td.classList.add('editable-cell');
-    td.addEventListener('click', () => startCellEdit(td, rowKey, fieldType));
-  }
-
   function startCellEdit(td, rowKey, fieldType) {
     if (td.querySelector('input')) return; // already editing this cell
 
@@ -1843,6 +2294,9 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         cancel();
       }
     });
+    // Don't let taps inside the input bubble up to the cell's own
+    // long-press/click wiring.
+    input.addEventListener('click', (e) => e.stopPropagation());
   }
 
   function finishCellEdit(rowKey, fieldType, rawValue) {
@@ -1875,6 +2329,11 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       row.conditionManualValue = value; // '' is a valid, explicit "cleared" value
       row.conditionLowConf = false;
     }
+
+    // A manual edit counts as "just touched" for default-ordering
+    // purposes (Blueprint Section 8a: newest first) — same treatment as
+    // a rescan bumping a row back to the top.
+    row.updatedAt = nextActionTick();
 
     renderTable();
   }
@@ -1929,7 +2388,16 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       const conditionLowConf = (confidence.conditionBubble === 'low') || (confidence.conditionText === 'low');
 
       // A rescan of the same key OVERWRITES the previous row entirely
-      // (Blueprint Section 4), including clearing any prior manual edit.
+      // (Blueprint Section 4), including clearing any prior manual edit
+      // — EXCEPT the "#" (acqOrder): a rescan updates an existing
+      // acquisition, it doesn't create a new one, so that value carries
+      // forward from whatever row (if any) already occupied this key.
+      // updatedAt always gets a fresh tick either way, since a rescan
+      // does count as "just touched" for newest-first default ordering
+      // (Blueprint Section 8a).
+      const existingRow = tableData[rowKey];
+      const acqOrder = existingRow ? existingRow.acqOrder : nextActionTick();
+
       tableData[rowKey] = {
         displayName: displayName,
         response: (fields.response || '').toString().slice(0, 10),
@@ -1937,7 +2405,9 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         conditionBubble: (fields.conditionBubble || '').toString().slice(0, 1).toUpperCase(),
         conditionText: (fields.conditionText || '').toString().slice(0, 6),
         conditionManualValue: null,
-        conditionLowConf: conditionLowConf
+        conditionLowConf: conditionLowConf,
+        acqOrder: acqOrder,
+        updatedAt: nextActionTick()
       };
     });
 
@@ -1962,10 +2432,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // displays, so Copy/Average/Tally/Chart never disagree with what's
   // on screen. Mirrors renderTable()'s key collection + sort.
   function getSortedDisplayRows() {
-    const allKeys = getAllRowKeys();
-    const rows = allKeys.map(buildDisplayRow);
-    rows.sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }));
-    return rows;
+    return getOrderedRows();
   }
 
   // Per Blueprint Section 8: "if the table contains >=1 uncorrected
@@ -2031,10 +2498,12 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     const anyCondition = rows.some(r => computeConditionDisplay(r) !== '');
     const anyFlags = anyLowConfidenceFlags(rows);
 
-    const responseHeader = 'Response';
-    const conditionHeader = 'Condition';
+    const acqOrderHeader = getColumnLabel('acqOrder', '#');
+    const nameHeader = getColumnLabel('name', 'Name');
+    const responseHeader = getColumnLabel('response', 'Response');
+    const conditionHeader = getColumnLabel('condition', 'Condition');
 
-    const headerCells = ['Name', responseHeader];
+    const headerCells = [acqOrderHeader, nameHeader, responseHeader];
     if (anyCondition) headerCells.push(conditionHeader);
     if (anyFlags) headerCells.push('Flags');
 
@@ -2042,7 +2511,8 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 
     rows.forEach(row => {
       const displayName = anonymousMode ? getAnonymousCode(row.key) : row.displayName;
-      const cells = [displayName, row.response];
+      const acqOrderValue = (row.acqOrder !== undefined && row.acqOrder !== null) ? row.acqOrder : '';
+      const cells = [acqOrderValue, displayName, row.response];
       if (anyCondition) cells.push(computeConditionDisplay(row));
       if (anyFlags) cells.push(getRowFlagLabels(row, responseHeader, conditionHeader));
       lines.push(cells.map(tsvEscapeCell).join('\t'));
@@ -2773,6 +3243,9 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       roster = {}; // Section 7: roster persists "until Clear List or tab close"
       anonymousMode = false; // Section 8: "resets OFF on close"
       anonymousMap = {};
+      sortState = null; // table v2 view-state shouldn't bleed into a "new" session either
+      headerLabels = {};
+      sessionActionCounter = 0;
       setActiveTier('free'); // Section 2: Free is the default at EVERY app launch, and a bfcache restore is a new session by this same logic
       const ghostToggle = document.getElementById('ghost-toggle');
       if (ghostToggle) ghostToggle.classList.remove('on');
