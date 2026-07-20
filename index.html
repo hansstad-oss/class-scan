@@ -16,6 +16,12 @@
     --card-bg: #ffffff;
     --text: #202124;
     --border: #dadce0;
+    /* Blueprint v1.7 Section 8a: fixed 5-row scan-state table height —
+       approximate measured heights of one header row and one data row
+       at this file's table font-size/padding (see thead th / tbody td
+       below). Used only by the body.camera-scanning #table-wrap rule. */
+    --scan-header-h: 41px;
+    --scan-row-h: 47px;
   }
 
   * { box-sizing: border-box; }
@@ -37,13 +43,13 @@
     min-height: 100vh;
   }
 
-  /* ---------- TOP BAR (Blueprint v1.4 Sections 8 & 11) ----------
-     "Top row (always one slim row): mode dropdown + trial title + ⋯
-     overflow menu." The old 3-button mode selector, the viewport-based
-     dropdown/button toggle, and the separate toggle-row (Discrete/
-     Continuous, 👻, 🔦, 📥) are gone — the dropdown is now permanent,
-     and 📥/👻/⚙️ live in the overflow menu below. 🔦, Discrete/
-     Continuous, and the tier badge move to overlays on the camera
+  /* ---------- TOP BAR (Blueprint v1.7 Sections 7, 8 & 11) ----------
+     "Top row (always one slim row): mode dropdown + trial title + ⚙️
+     Settings icon." v1.7 removes the ⋯ overflow menu entirely: 👻
+     Anonymous is gone (subsumed by the Roster ON/OFF toggle) and 📥
+     Import is promoted to a real button in the main grid, so the only
+     thing left up here is a single bare ⚙️ Settings icon. 🔦, Discrete/
+     Continuous, and the tier badge remain overlays on the camera
      preview (#middle-area) — see that section. */
   #top-bar {
     background: var(--card-bg);
@@ -84,7 +90,9 @@
     white-space: nowrap;
   }
 
-  #overflow-menu-btn {
+  /* ---- ⚙️ Settings icon (v1.7: the only thing left in the top-right —
+     the ⋯ overflow menu, 👻 Anonymous, and their CSS are gone) ---- */
+  #settings-icon-btn {
     flex: 0 0 auto;
     background: none;
     border: none;
@@ -92,64 +100,6 @@
     cursor: pointer;
     padding: 4px 8px;
     line-height: 1;
-  }
-
-  /* ---- ⋯ overflow menu (📥 Import, 👻 Anonymous, ⚙️ Settings) ----
-     Positioned relative to #top-bar, which is already a positioned
-     element (position: sticky counts as a containing block for
-     absolutely-positioned descendants). */
-  #overflow-menu {
-    display: none;
-    position: absolute;
-    top: 50px;
-    right: 12px;
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.18);
-    z-index: 30;
-    min-width: 190px;
-    overflow: hidden;
-  }
-
-  #overflow-menu.show {
-    display: block;
-  }
-
-  .overflow-menu-item {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 13px 16px;
-    font-size: 15px;
-    font-family: inherit;
-    border: none;
-    border-bottom: 1px solid var(--border);
-    background: var(--card-bg);
-    color: var(--text);
-    cursor: pointer;
-  }
-
-  .overflow-menu-item:last-child {
-    border-bottom: none;
-  }
-
-  .overflow-menu-item:active {
-    background: #f1f3f4;
-  }
-
-  .overflow-menu-item.on {
-    background: var(--green);
-    color: #fff;
-  }
-
-  .overflow-menu-item.disabled-btn {
-    color: var(--grey);
-    cursor: not-allowed;
-  }
-
-  .hidden-toggle {
-    display: none;
   }
 
   /* ---- Small overlay controls on the camera preview (Blueprint
@@ -210,16 +160,16 @@
     justify-content: center;
   }
 
-  /* Blueprint v1.6 Section 8: "ALL remaining freed vertical space goes
+  /* Blueprint v1.7 Section 8: "ALL remaining freed vertical space goes
      to an ENLARGED camera preview." #table-wrap is the only flexible
      (flex:1) element in the review-state layout, so the preview just
      sits at its min-height. In scan state, flip which element is
      flexible: #middle-area becomes flex:1 (grows to fill whatever the
-     now row-capped table doesn't need) and #table-wrap becomes
-     flex:0 0 auto (sized to its content, which the JS side caps to
-     exactly 3 rows — see getScanStateRows()). min-height:0 is the
-     standard fix for a column-flex item's implicit min-height:auto
-     otherwise fighting the flex-grow. */
+     now fixed-height table doesn't need) and #table-wrap gets an
+     explicit height sized for exactly 5 rows (see the --scan-row-h /
+     --scan-header-h rule below) instead of growing with it. min-height:0
+     is the standard fix for a column-flex item's implicit
+     min-height:auto otherwise fighting the flex-grow. */
   body.camera-scanning #middle-area {
     flex: 1;
     min-height: 0;
@@ -367,11 +317,19 @@
   #btn-chart { grid-column: 1; grid-row: 3; }
   #btn-copy { grid-column: 1; grid-row: 4; }
 
-  /* Right column: Undo / Load List / Clear List / Reset */
+  /* Right column: Undo / Roster (ON-OFF) / Import / Reset — v1.7
+     Section 8: Load List + Clear List collapse into one Roster toggle,
+     and Import is promoted from the old ⋯ menu into this grid. */
   #btn-undo { grid-column: 3; grid-row: 1; }
-  #btn-load-list { grid-column: 3; grid-row: 2; }
-  #btn-clear-list { grid-column: 3; grid-row: 3; }
+  #btn-roster { grid-column: 3; grid-row: 2; }
+  #btn-import { grid-column: 3; grid-row: 3; }
   #btn-reset { grid-column: 3; grid-row: 4; }
+
+  /* Roster toggle's ON state (Blueprint Section 7) — same visual
+     language as the other "on" toggles in the app (tier badge, torch). */
+  #btn-roster.on {
+    background: var(--green);
+  }
 
   /* ---- SCAN state override: Stop · Capture · Undo, one double-height
      row, Capture widest and green ---- Everything else in the bar is
@@ -388,8 +346,8 @@
   body.camera-scanning #btn-tally,
   body.camera-scanning #btn-chart,
   body.camera-scanning #btn-copy,
-  body.camera-scanning #btn-load-list,
-  body.camera-scanning #btn-clear-list,
+  body.camera-scanning #btn-roster,
+  body.camera-scanning #btn-import,
   body.camera-scanning #link-btn,
   body.camera-scanning #btn-reset {
     display: none;
@@ -417,13 +375,22 @@
     background: var(--card-bg);
   }
 
-  /* Blueprint v1.6 Section 8: the table area shows exactly the 3 most
-     recent rows while scanning, and all space that frees up goes to
-     #middle-area (flex:1 override above) instead of the table — so
-     table-wrap stops being the flexible element here and just sizes to
-     its (row-capped) content. */
+  /* Blueprint v1.7 Section 8a: while scanning, the table area reserves
+     FIXED vertical space sized for exactly 5 rows — constant whether
+     the table is empty or has 50 rows, so nothing else on screen ever
+     shifts as data comes in. This is a real height (not a JS row-count
+     cap): all rows still exist in the DOM, and this area scrolls
+     internally once there are more than 5. --scan-row-h/--scan-header-h
+     are approximate measurements of the current table's row/header
+     height at the default font sizes above; if the table's row padding
+     or font-size ever changes, these two numbers are the only thing
+     that needs adjusting to keep the 5-row math accurate. Remaining
+     freed space still goes to #middle-area (flex:1 override above). */
   body.camera-scanning #table-wrap {
     flex: 0 0 auto;
+    height: calc(var(--scan-header-h) + (var(--scan-row-h) * 5));
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   table {
@@ -908,13 +875,13 @@
      phone-proportioned camera/controls column on the left (so buttons
      never stretch to fill a wide screen) and the table claiming the
      rest of the width — desktop's primary use case per Section 11a is
-     batch 📥 Import and grading review, both table-centric. */
+     batch 📥 Import and grading review, both table-centric. v1.7: Import
+     is now a promoted #btn-import in the main button grid (Section 8),
+     which already renders inside #camera-column at every width, so the
+     old desktop-only banner button is gone — one Import entry point,
+     not two. */
   #camera-column {
     display: contents;
-  }
-
-  #desktop-import-btn {
-    display: none; /* phone: 📥 stays in the ⋯ menu only, per Section 8 */
   }
 
   @media (min-width: 900px) {
@@ -947,35 +914,6 @@
     #table-wrap {
       grid-area: table;
       min-height: 0;
-    }
-
-    /* Blueprint 11a: "📥 Import is prominent when no camera is active."
-       Hidden again while scanning via the same body.camera-scanning
-       class every other state-dependent rule already uses. */
-    #desktop-import-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      width: calc(100% - 16px);
-      margin: 8px;
-      padding: 14px;
-      font-size: 15px;
-      font-weight: 700;
-      text-align: center;
-      background: var(--blue);
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      cursor: pointer;
-    }
-
-    #desktop-import-btn:active {
-      filter: brightness(0.9);
-    }
-
-    body.camera-scanning #desktop-import-btn {
-      display: none;
     }
 
     /* Readable text at desktop viewing distance/width, and enough
@@ -1011,7 +949,7 @@
 
 <div id="app">
 
-  <!-- ============ TOP BAR (Blueprint v1.4 Section 11: one slim row) ============ -->
+  <!-- ============ TOP BAR (Blueprint v1.7 Section 11: one slim row) ============ -->
   <div id="top-bar">
     <div id="top-row">
       <select id="mode-selector-dropdown" onchange="selectMode(this.value)">
@@ -1022,14 +960,10 @@
 
       <div id="trial-title">No trial linked — data stays local</div>
 
-      <button id="overflow-menu-btn" onclick="toggleOverflowMenu()" title="More">⋯</button>
-    </div>
-
-    <!-- ⋯ overflow menu: 📥 Import, 👻 Anonymous (Cards only), ⚙️ Settings -->
-    <div id="overflow-menu">
-      <button class="overflow-menu-item" id="import-toggle" onclick="handleOverflowImport()">📥 Import</button>
-      <button class="overflow-menu-item" id="ghost-toggle" onclick="handleOverflowAnonymous()">👻 Anonymous</button>
-      <button class="overflow-menu-item" id="overflow-settings-btn" onclick="handleOverflowSettings()">⚙️ Settings</button>
+      <!-- v1.7: the ⋯ overflow menu is gone (👻 Anonymous removed, 📥
+           Import promoted to the button grid below) — only ⚙️ Settings
+           remains, as a single bare icon. -->
+      <button id="settings-icon-btn" onclick="openSettings()" title="Settings">⚙️</button>
     </div>
   </div>
 
@@ -1040,12 +974,6 @@
        phone widths these three render exactly as direct #app children,
        same as before this step — zero mobile-layout change. -->
   <div id="camera-column">
-
-    <!-- 📥 Import call-to-action — desktop-only (hidden by default,
-         hidden again while the camera is scanning), Blueprint 11a:
-         "📥 Import is prominent when no camera is active." Same
-         handler as the ⋯ menu's Import item — still a stub. -->
-    <button id="desktop-import-btn" onclick="handleOverflowImport()">📥 Import PDF — batch grading &amp; review</button>
 
     <!-- ============ STATUS LINE ============ -->
     <div id="status-line"><span id="status-text">Ready. Tap Start to open the camera. (QR reading and AI analysis are not connected yet.)</span></div>
@@ -1079,10 +1007,10 @@
 
       <button class="action-btn secondary-btn" id="btn-tally" onclick="handleTally()">Tally</button>
       <button class="action-btn" id="start-capture-btn" onclick="handleStartCapture()">Start</button>
-      <button class="action-btn secondary-btn" id="btn-load-list" onclick="handleLoadList()">Load List</button>
+      <button class="action-btn secondary-btn" id="btn-roster" onclick="toggleRoster()">Roster: OFF</button>
 
       <button class="action-btn secondary-btn" id="btn-chart" onclick="handleChart()">Chart</button>
-      <button class="action-btn secondary-btn" id="btn-clear-list" onclick="handleClearList()">Clear List</button>
+      <button class="action-btn secondary-btn" id="btn-import" onclick="handleImport()">📥 Import</button>
 
       <button class="action-btn secondary-btn" id="btn-copy" onclick="handleCopy()">Copy</button>
       <button class="action-btn secondary-btn" id="link-btn" onclick="notReady('Link (export)')">Link</button>
@@ -1265,24 +1193,19 @@
   }
 
   // ---- Mode selector (visual only in this step) ----
-  // Blueprint v1.4 Section 8: the mode selector is now ALWAYS the
+  // Blueprint v1.7 Section 8: the mode selector is now ALWAYS the
   // compact dropdown (no more 3-button row to keep in sync) — the only
   // caller of selectMode() is the dropdown's own onchange, so its value
   // is already correct by the time this runs. The defensive sync below
   // is kept only in case something else ever calls selectMode()
-  // programmatically.
+  // programmatically. The old Cards-only ghost-toggle visibility logic
+  // is gone: the Roster toggle that replaced Anonymous is available in
+  // every mode (Section 8: "Roster toggle all modes"), so there's
+  // nothing left here to show/hide per mode.
   function selectMode(mode) {
     const dropdown = document.getElementById('mode-selector-dropdown');
     if (dropdown && dropdown.value !== mode) {
       dropdown.value = mode;
-    }
-
-    // Ghost toggle only exists in Cards mode (per Blueprint Section 8)
-    const ghostToggle = document.getElementById('ghost-toggle');
-    if (mode === 'cards') {
-      ghostToggle.classList.remove('hidden-toggle');
-    } else {
-      ghostToggle.classList.add('hidden-toggle');
     }
 
     // Average/Tally/Chart availability varies by mode (visual placeholder only — no logic yet)
@@ -1308,75 +1231,19 @@
   }
 
   // ---------------------------------------------------------------
-  // ⋯ OVERFLOW MENU (Blueprint v1.4 Section 8)
-  // Houses 📥 Import, 👻 Anonymous (Cards-only — same #ghost-toggle
-  // element/logic as before, just relocated), and ⚙️ Settings. Each
-  // item's own onClick/toggle/availability logic is unchanged from
-  // before this step; these wrapper functions only add "close the menu
-  // after the tap" and, for Import, the new camera-stopped-only gate.
+  // 📥 IMPORT (Blueprint v1.7 Section 8: now a real grid button,
+  // #btn-import, instead of living in the old ⋯ overflow menu — which
+  // is gone entirely in v1.7). The button is already removed from
+  // layout while scanning via the body.camera-scanning CSS rule, so
+  // this cameraActive check is just a defensive backstop. Import
+  // itself is still a stub (Build Phase 13, not built yet).
   // ---------------------------------------------------------------
-  function toggleOverflowMenu() {
-    const menu = document.getElementById('overflow-menu');
-    if (!menu) return;
-    if (menu.classList.contains('show')) {
-      closeOverflowMenu();
-    } else {
-      openOverflowMenu();
-    }
-  }
-
-  function openOverflowMenu() {
-    const menu = document.getElementById('overflow-menu');
-    if (!menu) return;
-    refreshOverflowImportAvailability();
-    menu.classList.add('show');
-    // Close on an outside tap — capture phase so this fires before any
-    // other click handler on whatever was tapped.
-    document.addEventListener('click', handleOverflowMenuOutsideClick, true);
-  }
-
-  function closeOverflowMenu() {
-    const menu = document.getElementById('overflow-menu');
-    if (!menu) return;
-    menu.classList.remove('show');
-    document.removeEventListener('click', handleOverflowMenuOutsideClick, true);
-  }
-
-  function handleOverflowMenuOutsideClick(e) {
-    const menu = document.getElementById('overflow-menu');
-    const btn = document.getElementById('overflow-menu-btn');
-    if (!menu) return;
-    if (menu.contains(e.target) || (btn && btn.contains(e.target))) return;
-    closeOverflowMenu();
-  }
-
-  // Blueprint Section 8: "📥 usable only while the camera is stopped."
-  // Import itself is still a stub (Build Phase 13, not built) — this
-  // only implements its availability gating, not the feature.
-  function refreshOverflowImportAvailability() {
-    const importBtn = document.getElementById('import-toggle');
-    if (!importBtn) return;
-    importBtn.classList.toggle('disabled-btn', cameraActive);
-  }
-
-  function handleOverflowImport() {
+  function handleImport() {
     if (cameraActive) {
       showToast('Stop the camera first to use Import');
-      closeOverflowMenu();
       return;
     }
-    closeOverflowMenu();
     notReady('📥 PDF Import');
-  }
-
-  function handleOverflowAnonymous() {
-    closeOverflowMenu();
-    toggleAnonymous();
-  }
-
-  function handleOverflowSettings() {
-    closeOverflowMenu();
-    openSettings();
   }
 
   // ---------------------------------------------------------------
@@ -2104,8 +1971,20 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   let tableData = {}; // key: lowercased trimmed name -> row object
   let undoSnapshot = null; // single-level undo (Blueprint Section 8)
   let roster = {}; // key: lowercased trimmed name -> { displayName, id }
-  let anonymousMode = false; // Cards-only, default OFF (Blueprint Section 8)
-  let anonymousMap = {}; // key: lowercased trimmed name -> stable 3-digit code
+  let activeRosterClassTitle = ''; // from the unified ROSTER|ClassTitle|... QR payload (Blueprint Section 7)
+
+  // ---- Roster ON/OFF toggle (Blueprint v1.7 Section 7 — replaces the
+  // old Load List + Clear List + Anonymous trio). Default OFF: names
+  // hidden, table/exports show a numeric ID or "Guest N" instead. ----
+  let rosterOn = false;
+  // guestLabelMap: key -> stable "Guest N" label, assigned in order of
+  // first appearance this session. Used as the OFF-mode display for any
+  // row that has no roster ID to show (interim rule — once Step 2 adds
+  // ArUco marker IDs, the marker number itself becomes this fallback,
+  // per Blueprint Section 4: "the key IS the number and displays as
+  // Guest N"). Replaces the old anonymousMap random-code approach.
+  let guestLabelMap = {};
+  let guestLabelCounter = 0;
 
   // ---- Table v2 state (Blueprint Section 8a) ----
   // sortState: null = default layout (scanned block newest-first, red
@@ -2154,15 +2033,22 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     return '';
   }
 
-  function getAnonymousCode(key) {
-    if (anonymousMap[key]) return anonymousMap[key];
-    const used = new Set(Object.values(anonymousMap));
-    let code;
-    do {
-      code = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
-    } while (used.has(code));
-    anonymousMap[key] = code;
-    return code;
+  function getGuestLabel(key) {
+    if (guestLabelMap[key]) return guestLabelMap[key];
+    guestLabelCounter += 1;
+    const label = 'Guest ' + guestLabelCounter;
+    guestLabelMap[key] = label;
+    return label;
+  }
+
+  // Roster-OFF display value for a row (Blueprint Section 7: "OFF =
+  // names hidden, table and ALL exports show the numeric ID / Guest N
+  // only"). If this key matches a roster entry that has an ID, show
+  // that ID; otherwise fall back to a stable "Guest N" placeholder.
+  function getIdentityDisplay(key) {
+    const rosterEntry = roster[key];
+    if (rosterEntry && rosterEntry.id) return rosterEntry.id;
+    return getGuestLabel(key);
   }
 
   function getAllRowKeys() {
@@ -2299,8 +2185,8 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // own ordering and as a tiebreaker so ties elsewhere don't fall back
   // to incidental object-key insertion order.
   function compareByNameFallback(a, b, ascending) {
-    const av = anonymousMode ? getAnonymousCode(a.key) : a.displayName;
-    const bv = anonymousMode ? getAnonymousCode(b.key) : b.displayName;
+    const av = rosterOn ? a.displayName : getIdentityDisplay(a.key);
+    const bv = rosterOn ? b.displayName : getIdentityDisplay(b.key);
     const cmp = av.localeCompare(bv, undefined, { sensitivity: 'base' });
     return ascending ? cmp : -cmp;
   }
@@ -2335,8 +2221,8 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 
     let cmp;
     if (columnId === 'name') {
-      const av = anonymousMode ? getAnonymousCode(a.key) : a.displayName;
-      const bv = anonymousMode ? getAnonymousCode(b.key) : b.displayName;
+      const av = rosterOn ? a.displayName : getIdentityDisplay(a.key);
+      const bv = rosterOn ? b.displayName : getIdentityDisplay(b.key);
       cmp = av.localeCompare(bv, undefined, { sensitivity: 'base' });
     } else if (columnId === 'response') {
       cmp = smartCompareValues(a.response, b.response);
@@ -2376,15 +2262,20 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     return withData.concat(withoutData);
   }
 
-  // Blueprint v1.6 Section 8: while scanning, the table shows exactly
-  // the 3 most recent rows, newest first — unconditionally, regardless
-  // of any column sort the person tapped into before starting the
-  // camera. The point is confirming what was just scanned, not
-  // reflecting whatever review-state sort was active; that sort is
-  // preserved in sortState and simply resumes once the camera stops.
+  // Blueprint v1.7 Section 8a: while scanning, the table always shows
+  // newest-first order — unconditionally, regardless of any column sort
+  // the person tapped into before starting the camera. The point is
+  // confirming what was just scanned, not reflecting whatever
+  // review-state sort was active; that sort is preserved in sortState
+  // and simply resumes once the camera stops. Unlike the old v1.6
+  // behavior, ALL rows are returned here (not just the newest 3) — the
+  // "only 5 rows' worth of space" rule is now a fixed-height, internally
+  // scrolling CSS area (see body.camera-scanning #table-wrap), not a
+  // row-count cap, so every row stays reachable by scrolling and none
+  // are silently hidden.
   function getScanStateRows() {
     const rows = getAllRowKeys().map(buildDisplayRow);
-    return computeDefaultOrder(rows).slice(0, 3);
+    return computeDefaultOrder(rows);
   }
 
   function handleHeaderSortClick(columnId) {
@@ -2582,11 +2473,12 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
           td.textContent = (row.acqOrder !== undefined && row.acqOrder !== null) ? String(row.acqOrder) : '';
         } else if (col.id === 'name') {
           td.classList.add('name-cell');
-          td.textContent = anonymousMode ? getAnonymousCode(row.key) : row.displayName;
+          td.textContent = rosterOn ? row.displayName : getIdentityDisplay(row.key);
           // DEFECT FIX (v1.4 Step 1, Defect 3): amber-flag a fallback /
           // unreadable Name cell (Blueprint 5a's unreadable-name amber
-          // rule) — previously nothing flagged this at all.
-          if (row.nameLowConf) td.classList.add('low-confidence');
+          // rule) — previously nothing flagged this at all. Only
+          // meaningful when the real name is actually showing.
+          if (rosterOn && row.nameLowConf) td.classList.add('low-confidence');
         } else if (col.id === 'response') {
           td.textContent = row.response;
           if (row.responseLowConf) td.classList.add('low-confidence');
@@ -2599,7 +2491,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         // real data exists — an unscanned roster placeholder has nothing
         // to edit or delete (same restriction the table already had).
         if (row.hasData) {
-          const canEdit = col.editable && !(col.id === 'name' && anonymousMode);
+          const canEdit = col.editable && !(col.id === 'name' && !rosterOn);
           attachLongPress(td, {
             onClick: canEdit ? () => startCellEdit(td, row.key, col.id) : null,
             onLongPress: () => confirmDeleteRow(row.key)
@@ -2614,9 +2506,33 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     });
   }
 
-  // ---- Roster: Load List / Clear List (Blueprint Section 7) ----
+  // Blueprint v1.7 Section 8a: "on each new capture the table snaps
+  // back to the top (newest row)." #table-wrap is the scrollable area
+  // in scan state (fixed-height, see CSS); resetting its scrollTop is
+  // all "snap to top" means here since rows are already newest-first.
+  function snapScanTableToTop() {
+    const tableWrapEl = document.getElementById('table-wrap');
+    if (tableWrapEl) tableWrapEl.scrollTop = 0;
+  }
+
+  // ---- Roster ON/OFF toggle (Blueprint v1.7 Section 7) ----
+  // Unified QR payload now carries a class title:
+  // ROSTER|ClassTitle|Name1:ID1;Name2:ID2;... — the class title is a
+  // single segment before the first remaining "|"; entries are
+  // unchanged (";"-separated Name:ID pairs, ID optional per entry).
   function parseRosterPayload(qrText) {
-    const body = qrText.slice('ROSTER|'.length).trim();
+    const afterPrefix = qrText.slice('ROSTER|'.length);
+    const separatorIndex = afterPrefix.indexOf('|');
+    let classTitle = '';
+    let body;
+    if (separatorIndex === -1) {
+      // No class-title segment found — tolerate an older-format roster
+      // QR (just entries, no title) rather than rejecting it outright.
+      body = afterPrefix.trim();
+    } else {
+      classTitle = afterPrefix.slice(0, separatorIndex).trim();
+      body = afterPrefix.slice(separatorIndex + 1).trim();
+    }
     if (!body) {
       return { ok: false, message: 'Roster QR was empty.' };
     }
@@ -2631,118 +2547,152 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     if (entries.length === 0) {
       return { ok: false, message: 'Roster QR had no valid student names.' };
     }
-    return { ok: true, entries: entries };
+    return { ok: true, entries: entries, classTitle: classTitle };
   }
 
-  function applyRoster(entries) {
+  function applyRoster(entries, classTitle) {
     // Loading a roster QR replaces the current roster with this one.
+    // (Full data-preserving hot-swap re-mapping by ID is a Blueprint
+    // Section 4 behavior that depends on ID-based row keys — out of
+    // scope until Step 2's ArUco identification lands; today's rows are
+    // still keyed by name, so a same-named student naturally carries
+    // forward unaffected.)
     const newRoster = {};
     entries.forEach(e => {
       newRoster[e.name.toLowerCase()] = { displayName: e.name, id: e.id };
     });
     roster = newRoster;
+    activeRosterClassTitle = classTitle || '';
     renderTable();
   }
 
-  function handleLoadList() {
-    if (!cameraActive) {
-      showToast('Start the camera first, then tap Load List');
+  // Reflects rosterOn in the grid button's label/highlight. Called on
+  // init and after every state change so the button never goes stale.
+  function renderRosterToggleUI() {
+    const btn = document.getElementById('btn-roster');
+    if (!btn) return;
+    btn.textContent = rosterOn ? 'Roster: ON' : 'Roster: OFF';
+    btn.classList.toggle('on', rosterOn);
+  }
+
+  // Main entry point for the Roster grid button (Blueprint Section 7).
+  function toggleRoster() {
+    if (rosterOn) {
+      // Turning OFF just hides names — the roster mapping itself is
+      // NOT cleared, per Blueprint: "Toggling OFF hides names but does
+      // NOT clear the mapping."
+      rosterOn = false;
+      renderRosterToggleUI();
+      renderTable();
+      showToast('Roster OFF — names hidden');
+      setStatus('Roster OFF. Table and exports now show IDs, not names.');
       return;
     }
+
+    const rosterLoaded = Object.keys(roster).length > 0;
+    if (rosterLoaded) {
+      // "Pressing ON when a roster is already in memory simply reveals
+      // names (mapping retained, instant)."
+      rosterOn = true;
+      renderRosterToggleUI();
+      renderTable();
+      showToast('Roster ON — names shown');
+      setStatus('Roster ON. Names are now visible and will export.');
+      return;
+    }
+
+    // "Pressing ON when NO roster is loaded → jumps to the capture
+    // screen to scan a roster QR, then returns to the main screen."
+    runRosterScanFlow();
+  }
+
+  // Jumps to the capture screen, scans one roster QR, applies it, then
+  // always returns to the main/review screen (Blueprint Section 7: "not
+  // to scanning"). The Roster button only appears in the stopped/review
+  // grid, so the camera should always be off when this starts — the
+  // cameraWasActive check below is just a defensive backstop in case
+  // this is ever triggered another way.
+  async function runRosterScanFlow() {
     if (capturing) {
       showToast('Still processing the last scan — try again in a moment');
       return;
     }
     if (typeof jsQR !== 'function') {
-      setStatus('QR scanning library failed to load — check your internet connection and reload the page.');
-      showToast('QR library failed to load');
+      showToast('QR library failed to load — check your internet connection and reload the page.');
       return;
     }
-    capturing = true;
-    setStatus('Reading roster QR code…');
 
-    burstScanQR(videoEl, canvasEl, {
+    const cameraWasActive = cameraActive;
+    if (!cameraActive) {
+      await startCamera();
+      if (!cameraActive) {
+        return; // startCamera() already reported the permission/device error
+      }
+    }
+
+    capturing = true;
+    setStatus('No roster loaded yet — point the camera at a roster QR code…');
+    showToast('Scan the roster QR code');
+
+    const result = await burstScanQR(videoEl, canvasEl, {
       onRetry: function (nextAttempt, maxAttempts) {
         setStatus('Reading roster QR code… (try ' + nextAttempt + ' of ' + maxAttempts + ')');
       }
-    }).then(function (result) {
-      if (result.cameraNotReady) {
-        capturing = false;
-        showToast('Camera still starting up — try again in a moment');
-        return;
-      }
+    });
 
-      if (result.qrText) {
-        finishRosterScan(result.qrText);
-        return;
-      }
+    if (result.cameraNotReady) {
+      capturing = false;
+      showToast('Camera still starting up — try again in a moment');
+      if (!cameraWasActive) stopCamera();
+      return;
+    }
 
-      setStatus('No QR code found after several tries — hold steady, keep it in frame, and try again.');
+    if (!result.qrText) {
       showToast('No QR code detected');
       capturing = false;
-    });
-  }
+      if (!cameraWasActive) stopCamera();
+      setStatus('No roster QR code found — tap Roster to try again.');
+      return;
+    }
 
-  function finishRosterScan(qrText) {
-    if (!qrText.startsWith('ROSTER|')) {
-      setStatus('That QR code is not a roster list.');
+    if (!result.qrText.startsWith('ROSTER|')) {
       showToast('Not a roster QR code');
       capturing = false;
+      if (!cameraWasActive) stopCamera();
+      setStatus('That QR code is not a roster list — tap Roster to try again.');
       return;
     }
 
-    const parsed = parseRosterPayload(qrText);
+    const parsed = parseRosterPayload(result.qrText);
     if (!parsed.ok) {
-      setStatus(parsed.message);
       showToast(parsed.message);
       capturing = false;
+      if (!cameraWasActive) stopCamera();
+      setStatus(parsed.message);
       return;
     }
 
-    applyRoster(parsed.entries);
-    setStatus('Roster loaded: ' + parsed.entries.length + ' student(s).');
-    showToast('Roster loaded');
+    applyRoster(parsed.entries, parsed.classTitle);
+    rosterOn = true;
+    renderRosterToggleUI();
+    capturing = false;
+    if (!cameraWasActive) stopCamera(); // "then returns to the main screen (not to scanning)"
 
-    // Brief success confirmation, consistent with the main Capture flow.
-    bannerEl.style.display = 'block';
-    setTimeout(() => {
-      bannerEl.style.display = 'none';
-      if (cameraActive) {
-        setStatus('Camera ready. Tap Capture for the next scan.');
-      }
-      capturing = false;
-    }, 1500);
-  }
-
-  function handleClearList() {
-    roster = {};
-    renderTable();
-    showToast('Roster cleared');
-    setStatus('Roster cleared. Scanned data is unaffected.');
-  }
-
-  // ---- Anonymous 👻 (Cards-only, Blueprint Section 8) ----
-  function toggleAnonymous() {
-    anonymousMode = !anonymousMode;
-    document.getElementById('ghost-toggle').classList.toggle('on', anonymousMode);
-    renderTable();
-    showToast(anonymousMode ? 'Anonymous mode ON — names hidden' : 'Anonymous mode OFF');
+    const titleNote = parsed.classTitle ? (parsed.classTitle + ' — ') : '';
+    showToast('Roster loaded — names ON');
+    setStatus('Roster loaded: ' + titleNote + parsed.entries.length + ' student(s). Names now showing.');
   }
 
   // ---- Reset (Blueprint Section 8: "confirm → clears table; roster
   // and tier setting survive") ----
   function handleReset() {
-    const confirmed = window.confirm('Reset will clear all scanned data from this trial and turn off Anonymous mode.\n\nYour roster and API key settings will NOT be affected.\n\nContinue?');
+    const confirmed = window.confirm('Reset will clear all scanned data from this trial.\n\nYour roster, Roster ON/OFF setting, and API key settings will NOT be affected.\n\nContinue?');
     if (!confirmed) return;
     tableData = {};
     undoSnapshot = null;
-    anonymousMode = false;
-    anonymousMap = {};
     sortState = null; // table v2: back to default newest-first/roster-block layout
     headerLabels = {}; // table v2: renamed headers restore to defaults (Blueprint Section 8a)
     sessionActionCounter = 0; // "#" is cleared with the table (Blueprint Section 8a)
-    const ghostToggle = document.getElementById('ghost-toggle');
-    if (ghostToggle) ghostToggle.classList.remove('on');
     closeResultsModal(); // avoid showing a stale Average/Tally/Chart view after Reset
     renderTable();
     showToast('Table reset');
@@ -3115,6 +3065,11 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     });
 
     renderTable();
+    // Blueprint v1.7 Section 8a: "on each new capture the table snaps
+    // back to the top (newest row)." Only meaningful in the fixed-height
+    // scan-state area, which is the only state this function is ever
+    // reached from (mid-capture, camera active).
+    if (cameraActive) snapScanTableToTop();
 
     // Blueprint 5a rule 6 ("flagged in a plain-language warning... the
     // rest of the photo processes normally") plus any overlap warning
@@ -3225,7 +3180,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     const lines = [headerCells.map(tsvEscapeCell).join('\t')];
 
     rows.forEach(row => {
-      const displayName = anonymousMode ? getAnonymousCode(row.key) : row.displayName;
+      const displayName = rosterOn ? row.displayName : getIdentityDisplay(row.key);
       const acqOrderValue = (row.acqOrder !== undefined && row.acqOrder !== null) ? row.acqOrder : '';
       const cells = [acqOrderValue, displayName, row.response];
       if (anyCondition) cells.push(computeConditionDisplay(row));
@@ -3722,11 +3677,12 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     setStatus('Frame captured…');
 
     const allQrResults = burstResult.qrResults || [];
-    // A roster QR photographed with the main Capture button, not Load
-    // List — check EVERY decoded QR, not just the first, now that a
-    // photo can legitimately contain several. Stop here entirely if any
-    // is found: don't call vision on a roster-QR photo, which would
-    // only fail with a confusing mismatch a moment later.
+    // A roster QR photographed with the main Capture button, not the
+    // Roster toggle's own scan flow — check EVERY decoded QR, not just
+    // the first, now that a photo can legitimately contain several.
+    // Stop here entirely if any is found: don't call vision on a
+    // roster-QR photo, which would only fail with a confusing mismatch
+    // a moment later.
     const rosterQrDetected = allQrResults.some(qr => qr.text.startsWith('ROSTER|'));
     // Name-QRs only, in case a roster QR was mixed into the same photo —
     // an unsupported/edge scenario, but this keeps it from polluting
@@ -3734,8 +3690,8 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     const qrResults = allQrResults.filter(qr => !qr.text.startsWith('ROSTER|'));
 
     if (rosterQrDetected) {
-      setStatus('That\'s a roster QR — use Load List instead of Capture.');
-      showToast('Use Load List for a roster QR');
+      setStatus('That\'s a roster QR — stop the camera and use the Roster button instead of Capture.');
+      showToast('Use the Roster button for a roster QR');
       resumeLiveView(false);
       return;
     }
@@ -3861,17 +3817,17 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     setStatus('Camera stopped. Trial data is kept — tap Start to resume scanning.');
   }
 
-  // Blueprint v1.4 Section 8: the button bar has exactly two states,
+  // Blueprint v1.7 Section 8: the button bar has exactly two states,
   // driven off a single body class — camera-scanning collapses the full
-  // grid down to Stop·Capture·Undo (see the CSS overrides) and, per
-  // Section 8's overflow-menu note, Import is only usable while stopped.
-  // v1.6 adds the table's 3-row scan-state cap (Blueprint Section 8),
-  // which also depends on cameraActive, so re-render here too — without
-  // this the table would keep showing its previous row set until some
-  // unrelated action happened to trigger a render.
+  // grid down to Stop·Capture·Undo (see the CSS overrides), which also
+  // hides #btn-import/#btn-roster (Import and the Roster toggle are
+  // both review-state-only actions). The table's fixed 5-row scan-state
+  // area (Blueprint Section 8a) also depends on cameraActive, so
+  // re-render here too — without this the table would keep showing its
+  // previous row set/ordering until some unrelated action happened to
+  // trigger a render.
   function updateCameraStateLayout() {
     document.body.classList.toggle('camera-scanning', cameraActive);
-    refreshOverflowImportAvailability();
     renderTable();
   }
 
@@ -3939,6 +3895,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // row and a dropdown, and its resize/orientationchange listeners, are
   // gone; there's nothing left to switch.)
   loadSavedApiKey();
+  renderRosterToggleUI(); // Blueprint v1.7 Section 7: Roster button starts labeled "Roster: OFF"
   updateCameraStateLayout();
 
   // ---------------------------------------------------------------
@@ -3957,16 +3914,16 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     if (event.persisted) {
       tableData = {};
       undoSnapshot = null;
-      roster = {}; // Section 7: roster persists "until Clear List or tab close"
-      anonymousMode = false; // Section 8: "resets OFF on close"
-      anonymousMap = {};
+      roster = {}; // Section 7: roster persists "until... tab close"
+      activeRosterClassTitle = '';
+      rosterOn = false; // Section 7: toggle defaults OFF at every app launch, same as Anonymous used to
+      guestLabelMap = {};
+      guestLabelCounter = 0;
       sortState = null; // table v2 view-state shouldn't bleed into a "new" session either
       headerLabels = {};
       sessionActionCounter = 0;
       setActiveTier('free'); // Section 2: Free is the default at EVERY app launch, and a bfcache restore is a new session by this same logic
-      const ghostToggle = document.getElementById('ghost-toggle');
-      if (ghostToggle) ghostToggle.classList.remove('on');
-      closeOverflowMenu();
+      renderRosterToggleUI();
       if (cameraActive) {
         stopCamera(); // also calls updateCameraStateLayout() internally
       } else {
