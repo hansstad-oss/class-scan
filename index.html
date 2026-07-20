@@ -1602,6 +1602,41 @@
    * @param {boolean} [opts.multi] - if true, ALSO runs decodeAllQRsInImageData() once on the final chosen bestCanvas and returns every QR found (with left-to-right centerX) as qrResults. Kept as a single pass on the one sharpest frame — not per sampled frame — so multi-card capture doesn't multiply jsQR's cost by the whole burst window; the existing single-QR early-stop below already ensures that frame is in reasonably good focus.
    * @returns {Promise<{qrText: string|null, qrResults: Array|undefined, bestCanvas: HTMLCanvasElement|null, attempts: number, cameraNotReady: boolean}>}
    */
+  // DEFECT FIX (v1.7 Step 1): startCamera() resolves as soon as
+  // getUserMedia() succeeds, but the <video> element still needs its
+  // own beat to decode a first frame (the 'loadedmetadata' event)
+  // before videoWidth/videoHeight go non-zero — and burstScanQR() below
+  // bails immediately with cameraNotReady if they're still zero, no
+  // retry. The manual Start-then-Capture/Load-List flow never hit this
+  // because a human always paused between tapping Start and tapping the
+  // next button; the automatic Roster-scan flow (Blueprint Section 7)
+  // calls startCamera() and burstScanQR() back-to-back with no such
+  // pause, so it needs to wait for real readiness explicitly instead.
+  function waitForVideoReady(videoEl, timeoutMs) {
+    timeoutMs = timeoutMs || 3000;
+    return new Promise(function (resolve) {
+      if (videoEl.videoWidth && videoEl.videoHeight) {
+        resolve(true);
+        return;
+      }
+      let settled = false;
+      const timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        videoEl.removeEventListener('loadedmetadata', onReady);
+        resolve(!!(videoEl.videoWidth && videoEl.videoHeight));
+      }, timeoutMs);
+      function onReady() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        videoEl.removeEventListener('loadedmetadata', onReady);
+        resolve(!!(videoEl.videoWidth && videoEl.videoHeight));
+      }
+      videoEl.addEventListener('loadedmetadata', onReady);
+    });
+  }
+
   async function burstScanQR(videoEl, workCanvas, opts) {
     opts = opts || {};
 
@@ -2628,6 +2663,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       if (!cameraActive) {
         return; // startCamera() already reported the permission/device error
       }
+      await waitForVideoReady(videoEl); // DEFECT FIX (v1.7 Step 1) — see waitForVideoReady's comment
     }
 
     capturing = true;
