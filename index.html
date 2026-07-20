@@ -1643,6 +1643,79 @@
     return (sumSq / n) - (mean * mean); // variance of the Laplacian response
   }
 
+  // ---------------------------------------------------------------
+  // MULTI-QR DECODE (Blueprint Section 5a step 1: "jsQR pass decodes
+  // ALL name-QRs in the photo with pixel coordinates")
+  //
+  // jsQR only ever finds ONE QR code per call, even when several are
+  // visible in the same image — a real, documented limitation of the
+  // library (flagged separately for the field-test deck). The standard
+  // workaround: decode once, then paint over the pixels that decode's
+  // own reported corner points cover (plus a small margin so its quiet
+  // zone can't leave a residual pattern jsQR redetects), and decode
+  // again on what's left. Repeat until a pass finds nothing new, or the
+  // safety cap below is hit.
+  //
+  // This intentionally runs on a COPY of the pixel buffer — the caller
+  // still needs the original, undamaged frame for the photo sent to
+  // vision and for sharpness scoring.
+  // ---------------------------------------------------------------
+  const MULTI_QR_MAX_PER_IMAGE = 8; // a bit above the Blueprint's "~6 cards" ceiling, as headroom
+  const MULTI_QR_BLANK_MARGIN_PX = 6;
+
+  function decodeAllQRsInImageData(imageData) {
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = new Uint8ClampedArray(imageData.data); // copy — see note above
+    const found = [];
+
+    for (let i = 0; i < MULTI_QR_MAX_PER_IMAGE; i++) {
+      let qrResult;
+      try {
+        qrResult = jsQR(data, width, height);
+      } catch (err) {
+        break;
+      }
+      if (!qrResult || !qrResult.data || !qrResult.data.trim()) break;
+
+      const loc = qrResult.location;
+      const xs = [loc.topLeftCorner.x, loc.topRightCorner.x, loc.bottomLeftCorner.x, loc.bottomRightCorner.x];
+      const ys = [loc.topLeftCorner.y, loc.topRightCorner.y, loc.bottomLeftCorner.y, loc.bottomRightCorner.y];
+      const minX = Math.max(0, Math.floor(Math.min.apply(null, xs)) - MULTI_QR_BLANK_MARGIN_PX);
+      const maxX = Math.min(width, Math.ceil(Math.max.apply(null, xs)) + MULTI_QR_BLANK_MARGIN_PX);
+      const minY = Math.max(0, Math.floor(Math.min.apply(null, ys)) - MULTI_QR_BLANK_MARGIN_PX);
+      const maxY = Math.min(height, Math.ceil(Math.max.apply(null, ys)) + MULTI_QR_BLANK_MARGIN_PX);
+
+      found.push({
+        text: qrResult.data.trim(),
+        // "pixel coordinates" (Blueprint 5a step 1) — centerX is all the
+        // matching logic actually needs, for left-to-right ordering
+        // (5a step 5).
+        centerX: (minX + maxX) / 2
+      });
+
+      for (let y = minY; y < maxY; y++) {
+        for (let x = minX; x < maxX; x++) {
+          const idx = (y * width + x) * 4;
+          data[idx] = 255;
+          data[idx + 1] = 255;
+          data[idx + 2] = 255;
+          data[idx + 3] = 255;
+        }
+      }
+    }
+
+    // Defensive de-dupe: if the blank-out margin ever left enough of a
+    // residual pattern for jsQR to redetect the same code, don't report
+    // it twice.
+    const seen = new Set();
+    return found.filter(r => {
+      if (seen.has(r.text)) return false;
+      seen.add(r.text);
+      return true;
+    });
+  }
+
   /**
    * Samples up to QR_BURST_MAX_ATTEMPTS fresh frames from a LIVE video
    * element (never frozen/hidden by this function — callers control
@@ -1659,7 +1732,8 @@
    * @param {HTMLCanvasElement} workCanvas - scratch canvas this function draws into each attempt (should stay hidden/off-screen for the duration; it is safe to reuse the app's existing freeze-canvas here since drawing into a display:none canvas has no visible effect)
    * @param {Object} [opts]
    * @param {function(number, number):void} [opts.onRetry] - called as (nextAttemptNumber1Indexed, maxAttempts) right before waiting to sample the next frame, so callers can update a "try N of M" status line the way Load List already does
-   * @returns {Promise<{qrText: string|null, bestCanvas: HTMLCanvasElement|null, attempts: number, cameraNotReady: boolean}>}
+   * @param {boolean} [opts.multi] - if true, ALSO runs decodeAllQRsInImageData() once on the final chosen bestCanvas and returns every QR found (with left-to-right centerX) as qrResults. Kept as a single pass on the one sharpest frame — not per sampled frame — so multi-card capture doesn't multiply jsQR's cost by the whole burst window; the existing single-QR early-stop below already ensures that frame is in reasonably good focus.
+   * @returns {Promise<{qrText: string|null, qrResults: Array|undefined, bestCanvas: HTMLCanvasElement|null, attempts: number, cameraNotReady: boolean}>}
    */
   async function burstScanQR(videoEl, workCanvas, opts) {
     opts = opts || {};
@@ -1744,11 +1818,33 @@
       }
     }
 
-    return { qrText: qrText, bestCanvas: bestCanvas, attempts: attemptsUsed, cameraNotReady: false };
+    const result = { qrText: qrText, bestCanvas: bestCanvas, attempts: attemptsUsed, cameraNotReady: false };
+
+    if (opts.multi) {
+      // Blueprint 5a step 1 — one multi-QR pass, on the single sharpest
+      // frame already chosen above (see the JSDoc note on why this
+      // isn't done per sampled frame).
+      if (bestCanvas) {
+        try {
+          const bestCtx = bestCanvas.getContext('2d');
+          const bestImageData = bestCtx.getImageData(0, 0, bestCanvas.width, bestCanvas.height);
+          result.qrResults = decodeAllQRsInImageData(bestImageData);
+        } catch (err) {
+          // Fall back to whatever the single-QR early-stop pass already
+          // found, rather than reporting zero cards on a getImageData
+          // failure alone.
+          result.qrResults = qrText ? [{ text: qrText, centerX: bestCanvas.width / 2 }] : [];
+        }
+      } else {
+        result.qrResults = [];
+      }
+    }
+
+    return result;
   }
 
   // ---------------------------------------------------------------
-  // CARDS-FRONT VISION PROMPT (Blueprint Section 5)
+  // CARDS-FRONT VISION PROMPT (Blueprint Section 5, 5a)
   // ---------------------------------------------------------------
   const CARDS_FRONT_PROMPT = `You are reading a photo of one or more paper response cards used in a classroom.
 
@@ -1756,10 +1852,13 @@ CARD LAYOUT (front face, blue template ink):
 - A printed student name near a small QR code at the top.
 - A "condition" area: bubble options A, B, C, D (may be marked) PLUS a small freeform text box (max 6 characters).
 - One large freeform response box (max 10 characters, block letters). Expected content is usually a number, a single letter, "Yes"/"No", or a short word.
+- Each individual card is outlined by its own bold frame.
 
 RULES:
 - Cards may be tilted or rotated in the photo.
-- Multiple cards may appear in one photo (up to about 6). Report one entry per card you can see.
+- Multiple cards may appear in one photo (up to about 6). Report ONE entry per card you can see, grouping each card's fields strictly by its own bold frame — never combine fields from two different frames into one entry, and never split one card's fields across two entries.
+- List entries in LEFT-TO-RIGHT order, matching the order the cards physically appear in the photo from left to right. This ordering matters — it is used to match cards to identifiers.
+- If two or more cards overlap, or their frames can't be told apart confidently, do NOT guess which field belongs to which card and do NOT merge them into one entry. Report only what you can confidently attribute to a single, clearly separate frame, and add a short plain-language warning to the "warnings" array describing the overlap (e.g. "2 cards appear to overlap — rescan them separately").
 - Printed template ink is blue or green. Student marks and handwriting are BLACK. Only read BLACK marks/handwriting as student answers — ignore the printed blue/green template lines and boxes themselves.
 - Ignore faded, smudged, or off-color marks that look like erased or prior answers.
 - Ignore any handwriting outside the designated name/condition/response boxes.
@@ -2761,62 +2860,219 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     showToast('Undo complete');
   }
 
-  function applyVisionResult(result, qrName) {
-    let entries = result.entries || [];
+  // ---------------------------------------------------------------
+  // MULTI-CARD MATCHING (Blueprint Section 5a — all 7 rules)
+  //
+  // Pure function: given the vision entries for one photo and the QRs
+  // jsQR decoded from it (each with a left-to-right centerX), decides
+  // which entry pairs with which QR, which are left unmatched, and what
+  // (if any) plain-language warning to show. Doesn't touch tableData —
+  // applyVisionResult() turns the result into rows exactly as it always
+  // has, just driven by matches instead of a single qrName override.
+  // ---------------------------------------------------------------
 
-    if (entries.length === 0) {
-      if (qrName) {
-        // DEFECT FIX (v1.4 Step 1, Defect 2): Blueprint 5a's single-pair
-        // auto-match rule is explicit — "A card with only a QR and no
-        // legible printed name must still resolve to the QR name
-        // WHENEVER THE QR DECODES." Previously, if vision reported zero
-        // cards for the photo (which it can do for a card with nothing
-        // but a QR to anchor a "card" detection on), the whole capture
-        // was silently discarded with a "No card detected" toast — even
-        // though a valid, locally-decoded QR existed. The QR pass itself
-        // was not failing; the bug was that the matching logic required
-        // vision to have reported a card before it would ever consider
-        // using the QR name. Fix: build a single entry from the QR name
-        // instead of bailing out. No fields were actually read from the
-        // card in this case, so Response/Condition are left blank and
-        // marked low-confidence rather than silently presented as
-        // confidently read.
-        entries = [{
-          key: qrName,
-          fields: {},
-          confidence: { response: 'low', conditionBubble: 'low', conditionText: 'low' }
-        }];
-      } else {
-        showToast('No card detected in that photo — try again');
-        return;
+  // Rule 4's "normalized name-string similarity" — case/space-
+  // insensitive comparison. Two knobs below tune how forgiving that
+  // comparison is; both are best-effort defaults pending field-test
+  // feedback, not values pinned by the Blueprint text itself.
+  const NAME_MATCH_MIN_SIMILARITY = 0.6; // how close two names must be (0-1) to be considered a candidate match at all
+  const NAME_MATCH_MIN_MARGIN = 0.15;    // how much better the best candidate must be than the runner-up before it's auto-accepted, so two similarly-close names never get an ambiguous guess
+
+  function normalizeNameForMatch(name) {
+    return (name || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+  }
+
+  // Levenshtein edit distance — small, dependency-free, and adequate
+  // for comparing short name strings (at most a little OCR/handwriting
+  // noise, not long documents where a faster algorithm would matter).
+  function levenshteinDistance(a, b) {
+    const m = a.length;
+    const n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    let prevRow = new Array(n + 1);
+    let curRow = new Array(n + 1);
+    for (let j = 0; j <= n; j++) prevRow[j] = j;
+    for (let i = 1; i <= m; i++) {
+      curRow[0] = i;
+      for (let j = 1; j <= n; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        curRow[j] = Math.min(
+          prevRow[j] + 1,       // deletion
+          curRow[j - 1] + 1,    // insertion
+          prevRow[j - 1] + cost // substitution
+        );
       }
+      const swap = prevRow;
+      prevRow = curRow;
+      curRow = swap;
+    }
+    return prevRow[n];
+  }
+
+  // 1 = identical after normalization, 0 = nothing in common (or either
+  // side blank — an empty printed name is never a "similarity", it's a
+  // missing signal, handled separately by the order-matching fallback).
+  function nameSimilarity(a, b) {
+    const na = normalizeNameForMatch(a);
+    const nb = normalizeNameForMatch(b);
+    if (!na || !nb) return 0;
+    if (na === nb) return 1;
+    const maxLen = Math.max(na.length, nb.length);
+    if (maxLen === 0) return 1;
+    return Math.max(0, 1 - levenshteinDistance(na, nb) / maxLen);
+  }
+
+  /**
+   * @param {Array} entries - result.entries from the vision response (left-to-right order, per the prompt)
+   * @param {Array} qrResults - [{text, centerX}] from the multi-QR decode (Blueprint 5a step 1)
+   * @returns {{matches: Array<{displayName:string, nameLowConf:boolean, entry:Object}>, warnings: Array<string>}}
+   */
+  function matchCardsToQRs(entries, qrResults) {
+    entries = entries || [];
+    qrResults = qrResults || [];
+
+    // Rule 3 — single-pair auto-match, CHECKED FIRST: unconditional,
+    // no name-similarity requirement, no printed name needed. A card
+    // with only a QR and no legible printed name must still resolve to
+    // the QR name whenever the QR decodes.
+    if (qrResults.length === 1 && entries.length === 1) {
+      return {
+        matches: [{ displayName: qrResults[0].text, nameLowConf: false, entry: entries[0] }],
+        warnings: []
+      };
+    }
+
+    const availableEntries = entries.map((entry, idx) => ({ entry: entry, idx: idx, claimed: false }));
+    const availableQRs = qrResults.map((qr, idx) => ({ qr: qr, idx: idx, claimed: false }));
+    const matches = [];
+
+    // Rule 4 — normalized name-string similarity; QR spelling always
+    // wins for the stored key/display. Score every (entry, QR) pair
+    // that has a legible printed name to compare, then accept the
+    // strongest matches first so a confident pair always gets first
+    // claim on its QR rather than losing it to a weaker pair processed
+    // earlier in array order.
+    const candidatePairs = [];
+    availableEntries.forEach(ae => {
+      const printedName = (ae.entry.key || '').toString().trim();
+      if (!printedName) return; // nothing to compare — falls to order-matching (rule 5) or stays unmatched (rule 6)
+      availableQRs.forEach(aq => {
+        const score = nameSimilarity(printedName, aq.qr.text);
+        if (score >= NAME_MATCH_MIN_SIMILARITY) {
+          candidatePairs.push({ ae: ae, aq: aq, score: score });
+        }
+      });
+    });
+    candidatePairs.sort((a, b) => b.score - a.score);
+
+    candidatePairs.forEach(pair => {
+      if (pair.ae.claimed || pair.aq.claimed) return;
+      // Ambiguity guard: only auto-accept if this is a clear winner on
+      // BOTH sides among what's still available — otherwise two
+      // similarly-close names would get an ambiguous guess, which
+      // rule 6 explicitly forbids. Leave it for order-matching instead.
+      const rivalForEntry = candidatePairs.find(p => p !== pair && !p.ae.claimed && !p.aq.claimed && p.ae === pair.ae);
+      const rivalForQR = candidatePairs.find(p => p !== pair && !p.ae.claimed && !p.aq.claimed && p.aq === pair.aq);
+      const entryMargin = rivalForEntry ? pair.score - rivalForEntry.score : 1;
+      const qrMargin = rivalForQR ? pair.score - rivalForQR.score : 1;
+      if (entryMargin < NAME_MATCH_MIN_MARGIN || qrMargin < NAME_MATCH_MIN_MARGIN) return;
+
+      pair.ae.claimed = true;
+      pair.aq.claimed = true;
+      matches.push({ displayName: pair.aq.qr.text, nameLowConf: false, entry: pair.ae.entry });
+    });
+
+    // Rule 5 — order-matching fallback: whatever's left, pair strictly
+    // by left-to-right position (QR centerX vs. the vision array's own
+    // left-to-right order, per the prompt). Only when BOTH sides drain
+    // exactly evenly — pairing an uneven leftover 1-for-1 would silently
+    // guess which surplus entry goes with which QR, which rule 6
+    // forbids ("never guess-attach"). An uneven leftover instead falls
+    // through to rule 6 and gets reported, not guessed.
+    const leftoverEntries = availableEntries.filter(ae => !ae.claimed).sort((a, b) => a.idx - b.idx);
+    const leftoverQRs = availableQRs.filter(aq => !aq.claimed).sort((a, b) => a.qr.centerX - b.qr.centerX);
+    if (leftoverEntries.length > 0 && leftoverEntries.length === leftoverQRs.length) {
+      for (let i = 0; i < leftoverEntries.length; i++) {
+        leftoverEntries[i].claimed = true;
+        leftoverQRs[i].claimed = true;
+        matches.push({ displayName: leftoverQRs[i].qr.text, nameLowConf: false, entry: leftoverEntries[i].entry });
+      }
+    }
+
+    // Rule 6 — leftovers: never guess-attach. Each still gets its own
+    // row (so no data is silently dropped), flagged unmatched (rule 7
+    // amber) and counted toward the plain-language warning.
+    let unmatchedCount = 0;
+
+    availableEntries.filter(ae => !ae.claimed).forEach(ae => {
+      unmatchedCount++;
+      matches.push({
+        displayName: (ae.entry.key || '').toString().trim(), // '' becomes "(unreadable name)" in applyVisionResult
+        nameLowConf: true, // rule 7 — an unmatched identity is never presented as confident data
+        entry: ae.entry
+      });
+    });
+
+    availableQRs.filter(aq => !aq.claimed).forEach(aq => {
+      unmatchedCount++;
+      // A confidently-decoded QR with no card content matched to it —
+      // the identity is QR-confirmed and trustworthy, but there's no
+      // field data to attach, so those are left blank and low-confidence
+      // rather than invented (rule 6: "never guess-attach").
+      matches.push({
+        displayName: aq.qr.text,
+        nameLowConf: false,
+        entry: { key: aq.qr.text, fields: {}, confidence: { response: 'low', conditionBubble: 'low', conditionText: 'low' } }
+      });
+    });
+
+    const warnings = [];
+    if (unmatchedCount === 1) {
+      warnings.push('1 card couldn\u2019t be matched \u2014 rescan it alone.');
+    } else if (unmatchedCount > 1) {
+      warnings.push(unmatchedCount + ' cards couldn\u2019t be matched \u2014 rescan them alone.');
+    }
+
+    return { matches: matches, warnings: warnings };
+  }
+
+  function applyVisionResult(result, qrResults) {
+    const entries = result.entries || [];
+    qrResults = qrResults || [];
+    const visionWarnings = (result.warnings || []).map(w => (w || '').toString().trim()).filter(w => w);
+
+    if (entries.length === 0 && qrResults.length === 0) {
+      showToast('No card detected in that photo — try again');
+      return;
+    }
+
+    const matchResult = matchCardsToQRs(entries, qrResults);
+    const matches = matchResult.matches;
+
+    if (matches.length === 0) {
+      // Only reachable if both inputs were empty, already handled above —
+      // kept as a defensive guard rather than assuming that can't change.
+      showToast('No card detected in that photo — try again');
+      return;
     }
 
     undoSnapshot = cloneTableData(tableData);
 
-    const singleCard = entries.length === 1;
+    matches.forEach(match => {
+      let displayName = (match.displayName || '').toString().trim();
 
-    entries.forEach(entry => {
-      let displayName = (entry.key || '').toString().trim();
-
-      // QR-overrides-vision matching (Blueprint Section 5a, single-pair
-      // auto-match) — only safe to apply automatically when there's
-      // exactly one card in the photo. This already applies regardless
-      // of whether vision itself managed to read a printed name for
-      // that card (i.e. it does NOT require entry.key to be non-empty).
-      if (singleCard && qrName) {
-        displayName = qrName;
-      }
-
-      // DEFECT FIX (v1.4 Step 1, Defect 3): track whether this row's
-      // name is a fallback/unreadable value BEFORE substituting the
-      // placeholder text, so the stored row can carry an accurate
-      // nameLowConf flag (Blueprint 5a's unreadable-name amber rule).
+      // DEFECT FIX (v1.4 Step 1, Defect 3) / Blueprint 5a rule 7: a name
+      // that falls through to this placeholder is, by definition,
+      // unreadable/fallback data and must be flagged, not presented as
+      // clean data.
       const nameUnreadable = !displayName;
       if (nameUnreadable) {
         displayName = '(unreadable name)';
       }
+      const nameLowConf = match.nameLowConf || nameUnreadable;
 
+      const entry = match.entry || {};
       const fields = entry.fields || {};
       const confidence = entry.confidence || {};
       const rowKey = displayName.toLowerCase();
@@ -2829,14 +3085,10 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       const responseLowConf = confidence.response === 'low';
       const conditionLowConf = (confidence.conditionBubble === 'low') || (confidence.conditionText === 'low');
 
-      // DEFECT FIX (v1.4 Step 1, Defect 1): acqOrder and updatedAt used
-      // to each independently call nextActionTick() for a brand-new row
-      // (one call for acqOrder, a second for updatedAt), burning two
-      // ticks per scan and making the "#" column skip by 2 (1, 3, 5…).
-      // A new row's acqOrder and updatedAt must share the SAME tick — the
-      // moment of first creation. Only a RESCAN of an EXISTING row should
-      // consume a fresh tick, and only for updatedAt; acqOrder carries
-      // forward unchanged from whatever row already occupied this key.
+      // DEFECT FIX (v1.4 Step 1, Defect 1): a new row's acqOrder and
+      // updatedAt must share the SAME tick (the moment of first
+      // creation); only a rescan of an EXISTING row consumes a fresh
+      // tick, and only for updatedAt — acqOrder carries forward.
       const existingRow = tableData[rowKey];
       let acqOrder, updatedAtTick;
       if (existingRow) {
@@ -2856,17 +3108,26 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         conditionText: (fields.conditionText || '').toString().slice(0, 6),
         conditionManualValue: null,
         conditionLowConf: conditionLowConf,
-        nameLowConf: nameUnreadable,
+        nameLowConf: nameLowConf,
         acqOrder: acqOrder,
         updatedAt: updatedAtTick
       };
     });
 
-    if (entries.length > 1 && qrName) {
-      showToast('Multiple cards in one photo — QR override skipped (one card per photo for now)');
-    }
-
     renderTable();
+
+    // Blueprint 5a rule 6 ("flagged in a plain-language warning... the
+    // rest of the photo processes normally") plus any overlap warning
+    // the vision prompt itself reported — combined into one message so
+    // the teacher sees everything from this capture at once, without
+    // blocking the (already-applied) rows that DID resolve cleanly.
+    const combinedWarnings = visionWarnings.concat(matchResult.warnings);
+    if (combinedWarnings.length > 0) {
+      setStatus(combinedWarnings.join(' '));
+      showToast(matches.length + ' card(s) scanned \u2014 see the status line for a warning');
+    } else {
+      setStatus(matches.length > 1 ? matches.length + ' cards added to the table.' : 'Scan added to the table.');
+    }
   }
 
   // ---------------------------------------------------------------
@@ -3419,14 +3680,18 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       showToast('QR library failed to load — continuing without QR name-match');
     }
 
-    setStatus('Reading QR code…');
+    setStatus('Reading QR code(s)…');
 
     // Video stays live during sampling (Blueprint Section 6b) — no
     // freeze here. The freeze happens after the burst, once we know
-    // which sampled frame was sharpest.
+    // which sampled frame was sharpest. multi:true also runs the
+    // Blueprint 5a step-1 multi-QR pass on that same sharpest frame —
+    // see burstScanQR's JSDoc for why that's a single pass, not one
+    // per sampled frame.
     const burstResult = await burstScanQR(videoEl, canvasEl, {
+      multi: true,
       onRetry: function (nextAttempt, maxAttempts) {
-        setStatus('Reading QR code… (try ' + nextAttempt + ' of ' + maxAttempts + ')');
+        setStatus('Reading QR code(s)… (try ' + nextAttempt + ' of ' + maxAttempts + ')');
       }
     });
 
@@ -3456,19 +3721,17 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     triggerShutterBlink();
     setStatus('Frame captured…');
 
-    let qrName = null;
-    let rosterQrDetected = false;
-    if (burstResult.qrText) {
-      if (burstResult.qrText.startsWith('ROSTER|')) {
-        // A roster QR photographed with the main Capture button, not
-        // Load List. Stop here entirely — don't call vision on a QR
-        // code photo, which would only fail with a confusing "No card
-        // detected" message a moment later.
-        rosterQrDetected = true;
-      } else {
-        qrName = burstResult.qrText;
-      }
-    }
+    const allQrResults = burstResult.qrResults || [];
+    // A roster QR photographed with the main Capture button, not Load
+    // List — check EVERY decoded QR, not just the first, now that a
+    // photo can legitimately contain several. Stop here entirely if any
+    // is found: don't call vision on a roster-QR photo, which would
+    // only fail with a confusing mismatch a moment later.
+    const rosterQrDetected = allQrResults.some(qr => qr.text.startsWith('ROSTER|'));
+    // Name-QRs only, in case a roster QR was mixed into the same photo —
+    // an unsupported/edge scenario, but this keeps it from polluting
+    // the matching pool if it somehow parses that far.
+    const qrResults = allQrResults.filter(qr => !qr.text.startsWith('ROSTER|'));
 
     if (rosterQrDetected) {
       setStatus('That\'s a roster QR — use Load List instead of Capture.');
@@ -3490,7 +3753,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     const dataUrl = canvasEl.toDataURL('image/jpeg', 0.85);
     const base64 = dataUrl.split(',')[1];
 
-    await runVisionCallWithRateLimitHandling(base64, qrName);
+    await runVisionCallWithRateLimitHandling(base64, qrResults);
   }
 
   // Runs the Cards-front vision call, and if it fails specifically with
@@ -3502,13 +3765,12 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // new key/throttle, which is what "reprocesses the pending queue"
   // means in a single-capture-at-a-time pipeline (PDF Import's
   // multi-page queue, Section 6a, doesn't exist yet to reprocess).
-  async function runVisionCallWithRateLimitHandling(base64, qrName) {
+  async function runVisionCallWithRateLimitHandling(base64, qrResults) {
     try {
       const result = await enqueueVisionCall(() =>
         VisionEngine.analyze(base64, { prompt: CARDS_FRONT_PROMPT })
       );
-      applyVisionResult(result, qrName);
-      setStatus('Scan added to the table.');
+      applyVisionResult(result, qrResults); // sets its own final status line (success, or a combined warning)
       resumeLiveView(true);
     } catch (err) {
       if (err && err.isRateLimit && activeTier === 'free') {
@@ -3524,7 +3786,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
           setActiveTier('turbo');
           showToast('Switched to 💲 Turbo — retrying this scan');
           setStatus('Retrying with 💲 Turbo…');
-          await runVisionCallWithRateLimitHandling(base64, qrName);
+          await runVisionCallWithRateLimitHandling(base64, qrResults);
           return;
         }
         // "Wait" — let the normal throttle queue retry naturally on the
