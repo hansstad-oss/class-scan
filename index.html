@@ -1528,17 +1528,16 @@
   }
 
   // ---------------------------------------------------------------
-  // CARD PHYSICAL LAYOUT CONTRACT — PROVISIONAL (Blueprint Sections
-  // 3.1/5/5a). Step 3 (the physical card generator) does not exist yet,
-  // so there is no real card to measure. These numbers are placeholders
-  // needed to make local emptiness-checking and vision-crop generation
-  // structurally functional now; they are NOT a researched layout.
-  // Step 3 must either draw cards matching this exact geometry, or this
-  // one block is what needs updating to match whatever Step 3 designs —
-  // nothing else in the detection pipeline should need to change.
+  // CARD PHYSICAL LAYOUT CONTRACT (Blueprint Sections 3.1/5/5a/10).
+  // These numbers are the REAL card geometry, not a placeholder — they
+  // match toolkit.html's Cards generator exactly (Step 3): marker at
+  // (1cm, 1cm), condition strip at v:[1.1,1.6], response area at
+  // v:[1.7,3.75], both spanning u:[0,2.8]. If toolkit.html's layout
+  // ever changes, this block must change identically, or the local
+  // emptiness-check/vision-crop will sample the wrong part of the card.
   //
-  // Coordinate system: "marker widths" (1.0 = one marker side length),
-  // relative to the marker's own local frame as returned by
+  // Coordinate system: "marker widths" (1.0 = one marker side length =
+  // 7cm), relative to the marker's own local frame as returned by
   // ArucoEngine.detect() — origin = corners[0] (top-left), +u axis =
   // corners[0]->corners[1] (rightward along the marker's top edge),
   // +v axis = corners[0]->corners[3] (downward along the marker's left
@@ -1546,21 +1545,21 @@
   // mapMarkerLocalToImage() below converts any (u,v) to an image pixel
   // via bilinear interpolation, so this works under rotation/tilt
   // without needing fixed pixel offsets.
-  //
-  // Assumed card layout: marker in the top-left corner (its own u:[0,1]
-  // v:[0,1] footprint), response box filling most of the card below it,
-  // condition bubbles + text in a strip below that.
   // ---------------------------------------------------------------
   const CARD_LAYOUT = {
-    // Local emptiness gate ONLY — deliberately narrow (just the response
-    // box, not condition), per Blueprint 5a: "call Gemini ONLY for cards
-    // whose response box is non-empty." A 0.15-marker-width gap below
-    // the marker's own v:[0,1] footprint keeps the marker's own black
-    // border out of the emptiness sample.
-    response: { u0: 0.0, v0: 1.15, u1: 2.8, v1: 3.00 },
-    // Crop sent to vision for a NON-empty card — response + condition
-    // together, since one vision call per card reads both at once.
-    visionCrop: { u0: 0.0, v0: 1.15, u1: 2.8, v1: 3.80 }
+    // Local emptiness gate ONLY — deliberately narrow (just the
+    // response box, not condition), per Blueprint 5a: "call Gemini
+    // ONLY for cards whose response box is non-empty." Matches
+    // toolkit.html's .response-area exactly (front face's large
+    // freeform box; same region also holds the back face's 21-bubble
+    // grid, which is fine — either way, "any dark marks here" is
+    // exactly what determines emptiness for both faces).
+    response: { u0: 0.0, v0: 1.7, u1: 2.8, v1: 3.75 },
+    // Crop sent to vision for a NON-empty card — condition strip +
+    // response area together, since one vision call per card reads
+    // both at once. Matches toolkit.html's .condition-area +
+    // .response-area combined span.
+    visionCrop: { u0: 0.0, v0: 1.1, u1: 2.8, v1: 3.75 }
   };
 
   // A region this small/clipped after clamping to the canvas can't be
