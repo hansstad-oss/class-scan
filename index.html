@@ -325,6 +325,20 @@
   #btn-import { grid-column: 3; grid-row: 3; }
   #btn-reset { grid-column: 3; grid-row: 4; }
 
+  /* DEFECT FIX: without this, a long-press on the button triggers the
+     browser's native text-selection callout (highlighted text + "Copy"
+     bubble) instead of the JS long-press handler — the same fix already
+     applied to .editable-cell/.deletable-cell/.header-cell below, just
+     missing here since #btn-roster is the first real <button> in the
+     app to get long-press behavior (attachButtonLongPress, Blueprint
+     Section 7 roster-clear gap fill). */
+  #btn-roster {
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
   /* Roster toggle's ON state (Blueprint Section 7) — same visual
      language as the other "on" toggles in the app (tier badge, torch). */
   #btn-roster.on {
