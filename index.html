@@ -325,22 +325,6 @@
   #btn-import { grid-column: 3; grid-row: 3; }
   #btn-reset { grid-column: 3; grid-row: 4; }
 
-  /* DEFECT FIX: without this, a long-press on any grid button can
-     trigger the browser's native text-selection callout (highlighted
-     text + "Copy" bubble) instead of/on top of the app's own handling —
-     the same fix already applied to .editable-cell/.deletable-cell/
-     .header-cell below, just missing on buttons until now. Applied to
-     the whole .action-btn class (not just #btn-roster) since any button
-     can catch a stray long touch during a lesson, not only the one with
-     actual long-press logic attached (attachButtonLongPress, Blueprint
-     Section 7 roster-clear gap fill). */
-  .action-btn {
-    touch-action: manipulation;
-    -webkit-touch-callout: none;
-    -webkit-user-select: none;
-    user-select: none;
-  }
-
   /* Roster toggle's ON state (Blueprint Section 7) — same visual
      language as the other "on" toggles in the app (tier badge, torch). */
   #btn-roster.on {
@@ -584,6 +568,79 @@
   #delete-row-confirm-btn {
     background: var(--red);
     color: #fff;
+  }
+
+  /* ---------- RESET DIALOG (Blueprint Section 8, extended) ----------
+     Reset now offers a choice instead of a plain OK/Cancel: clear the
+     table only, or clear the table AND the roster. Same visual pattern
+     as the delete-row/rate-limit dialogs above — one fixed overlay,
+     centered card, stacked full-width buttons. */
+  #reset-dialog {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 300;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #reset-dialog.show {
+    display: flex;
+  }
+
+  #reset-dialog-inner {
+    background: #ffffff;
+    width: 88%;
+    max-width: 360px;
+    border-radius: 16px;
+    padding: 24px 20px;
+    text-align: center;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+  }
+
+  #reset-dialog-inner h3 {
+    margin: 0 0 12px 0;
+    font-size: 20px;
+    color: var(--text);
+  }
+
+  #reset-dialog-inner p {
+    margin: 0 0 20px 0;
+    font-size: 15px;
+    color: #5f6368;
+    line-height: 1.4;
+  }
+
+  #reset-dialog-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .reset-dialog-btn {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 700;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+
+  #reset-responses-only-btn {
+    background: var(--blue);
+    color: #fff;
+  }
+
+  #reset-responses-and-roster-btn {
+    background: var(--red);
+    color: #fff;
+  }
+
+  #reset-cancel-btn {
+    background: #f1f3f4;
+    color: var(--text);
   }
 
   /* ---------- RESULTS MODAL (Average / Tally / Chart) ---------- */
@@ -1088,6 +1145,19 @@
     <div id="delete-row-dialog-buttons">
       <button id="delete-row-cancel-btn" class="delete-row-btn" onclick="handleDeleteRowCancel()">Cancel</button>
       <button id="delete-row-confirm-btn" class="delete-row-btn" onclick="handleDeleteRowConfirm()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ RESET DIALOG (Blueprint Section 8, extended) ============ -->
+<div id="reset-dialog">
+  <div id="reset-dialog-inner">
+    <h3>Reset</h3>
+    <p>Clear all scanned data from this trial. Choose whether to also clear the loaded roster.</p>
+    <div id="reset-dialog-buttons">
+      <button id="reset-responses-only-btn" class="reset-dialog-btn" onclick="handleResetResponsesOnly()">Clear responses only</button>
+      <button id="reset-responses-and-roster-btn" class="reset-dialog-btn" onclick="handleResetResponsesAndRoster()">Clear responses and roster</button>
+      <button id="reset-cancel-btn" class="reset-dialog-btn" onclick="hideResetDialog()">Cancel</button>
     </div>
   </div>
 </div>
@@ -2230,82 +2300,6 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     });
   }
 
-  // Adds a long-press action to a REAL <button> (unlike attachLongPress
-  // above, which targets plain <td>/<th> elements that have NO native
-  // keyboard activation and so must simulate a click on Enter/Space —
-  // reusing that same logic on an actual <button> would double-fire its
-  // onclick on every keyboard press, since buttons already fire a
-  // native click for Enter/Space on their own). This helper only ADDS
-  // the long-press: normal tap/click/Enter/Space still runs the
-  // button's own onclick untouched; a genuine long-press (or
-  // right-click, the desktop equivalent) fires onLongPress instead and
-  // swallows that one trailing click so onclick doesn't also fire.
-  function attachButtonLongPress(el, onLongPress) {
-    const thresholdMs = 550;
-    const moveTolerancePx = 10;
-    let timer = null;
-    let startX = 0;
-    let startY = 0;
-    let longPressFired = false;
-
-    function clearTimer() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    }
-
-    el.addEventListener('pointerdown', (e) => {
-      if (e.button !== undefined && e.button !== 0) return; // primary button/touch only
-      longPressFired = false;
-      startX = e.clientX;
-      startY = e.clientY;
-      clearTimer();
-      timer = setTimeout(() => {
-        timer = null;
-        longPressFired = true;
-        onLongPress();
-      }, thresholdMs);
-    });
-
-    el.addEventListener('pointermove', (e) => {
-      if (!timer) return;
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
-      if (Math.sqrt(dx * dx + dy * dy) > moveTolerancePx) {
-        clearTimer(); // looks like a scroll/drag, not a long-press
-      }
-    });
-
-    el.addEventListener('pointerup', clearTimer);
-    el.addEventListener('pointercancel', clearTimer);
-    el.addEventListener('pointerleave', clearTimer);
-
-    // Capture phase so this runs before the button's own onclick and
-    // can swallow the trailing synthetic click a long touch-hold sends.
-    el.addEventListener('click', (e) => {
-      if (longPressFired) {
-        longPressFired = false;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-      }
-    }, true);
-
-    el.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      onLongPress();
-    });
-
-    // DEFECT FIX (belt-and-suspenders): the CSS user-select/touch-callout
-    // properties on .action-btn don't reliably suppress every mobile
-    // browser's native long-press text-selection callout on their own —
-    // explicitly cancelling selectstart (and dragstart, since a
-    // long-press-then-drag can also kick off a native drag gesture)
-    // blocks it at the event level regardless of CSS support quirks.
-    el.addEventListener('selectstart', (e) => e.preventDefault());
-    el.addEventListener('dragstart', (e) => e.preventDefault());
-  }
-
   // ---- Row ordering / sorting (Blueprint Section 8a) ----
 
   // Direction-aware alphabetical fallback, used both as the red-block's
@@ -2811,36 +2805,39 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     setStatus('Roster loaded: ' + titleNote + parsed.entries.length + ' student(s). Names now showing.');
   }
 
-  // ---- Long-press the Roster button to clear the roster entirely ----
-  // Gap fill, not a Blueprint requirement: v1.7 collapses Load List +
-  // Clear List + Anonymous into one Roster toggle, but the toggle alone
-  // gives no way back to an EMPTY roster within a session — only
-  // reloading/closing the tab did. Wired up via attachButtonLongPress
-  // in Init below: a normal tap keeps toggling ON/OFF (the button's own
-  // onclick), a long-press (or right-click on desktop) clears.
-  function handleClearRoster() {
-    if (Object.keys(roster).length === 0) {
-      showToast('No roster loaded');
-      return;
-    }
-    const confirmed = window.confirm('Clear roster?\n\nThis removes the loaded roster and turns names off. Scanned data is not affected.');
-    if (!confirmed) return;
+  // Shared roster-clear logic — used by the Reset dialog's "Clear
+  // responses and roster" option below. (Extracted, not inlined, so the
+  // one place that clears a roster stays a single well-named function.)
+  function clearRosterState() {
     roster = {};
     activeRosterClassTitle = '';
     rosterOn = false;
     guestLabelMap = {};
     guestLabelCounter = 0;
-    renderRosterToggleUI();
-    renderTable();
-    showToast('Roster cleared');
-    setStatus('Roster cleared. Scanned data is unaffected.');
   }
 
-  // ---- Reset (Blueprint Section 8: "confirm → clears table; roster
-  // and tier setting survive") ----
+  // ---- Reset dialog (Blueprint Section 8, extended) ----
+  // v1.7 collapsed Load List + Clear List + Anonymous into one Roster
+  // toggle, which left no way back to an EMPTY roster within a session.
+  // Rather than a separate gesture, Reset's own confirmation now offers
+  // two destinations plus Cancel: clear the table only (original Reset
+  // behavior — roster and tier survive), or clear the table AND the
+  // roster together. A single tap on Reset always opens this dialog;
+  // there is no long-press anywhere in the app for this.
+  function showResetDialog() {
+    document.getElementById('reset-dialog').classList.add('show');
+  }
+
+  function hideResetDialog() {
+    document.getElementById('reset-dialog').classList.remove('show');
+  }
+
   function handleReset() {
-    const confirmed = window.confirm('Reset will clear all scanned data from this trial.\n\nYour roster, Roster ON/OFF setting, and API key settings will NOT be affected.\n\nContinue?');
-    if (!confirmed) return;
+    showResetDialog();
+  }
+
+  function handleResetResponsesOnly() {
+    hideResetDialog();
     tableData = {};
     undoSnapshot = null;
     sortState = null; // table v2: back to default newest-first/roster-block layout
@@ -2850,6 +2847,21 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     renderTable();
     showToast('Table reset');
     setStatus('Table reset. Roster and API key settings kept.');
+  }
+
+  function handleResetResponsesAndRoster() {
+    hideResetDialog();
+    tableData = {};
+    undoSnapshot = null;
+    sortState = null;
+    headerLabels = {};
+    sessionActionCounter = 0;
+    closeResultsModal();
+    clearRosterState();
+    renderRosterToggleUI();
+    renderTable();
+    showToast('Table and roster reset');
+    setStatus('Table reset and roster cleared. Roster is now OFF.');
   }
 
   // ---- Tap-to-edit (Blueprint Section 8) ----
@@ -4049,9 +4061,6 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // gone; there's nothing left to switch.)
   loadSavedApiKey();
   renderRosterToggleUI(); // Blueprint v1.7 Section 7: Roster button starts labeled "Roster: OFF"
-  // Long-press (or right-click on desktop) clears the roster; the
-  // button's own onclick="toggleRoster()" handles the normal tap.
-  attachButtonLongPress(document.getElementById('btn-roster'), handleClearRoster);
   updateCameraStateLayout();
 
   // ---------------------------------------------------------------
