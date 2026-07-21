@@ -2214,6 +2214,73 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     });
   }
 
+  // Adds a long-press action to a REAL <button> (unlike attachLongPress
+  // above, which targets plain <td>/<th> elements that have NO native
+  // keyboard activation and so must simulate a click on Enter/Space —
+  // reusing that same logic on an actual <button> would double-fire its
+  // onclick on every keyboard press, since buttons already fire a
+  // native click for Enter/Space on their own). This helper only ADDS
+  // the long-press: normal tap/click/Enter/Space still runs the
+  // button's own onclick untouched; a genuine long-press (or
+  // right-click, the desktop equivalent) fires onLongPress instead and
+  // swallows that one trailing click so onclick doesn't also fire.
+  function attachButtonLongPress(el, onLongPress) {
+    const thresholdMs = 550;
+    const moveTolerancePx = 10;
+    let timer = null;
+    let startX = 0;
+    let startY = 0;
+    let longPressFired = false;
+
+    function clearTimer() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== undefined && e.button !== 0) return; // primary button/touch only
+      longPressFired = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      clearTimer();
+      timer = setTimeout(() => {
+        timer = null;
+        longPressFired = true;
+        onLongPress();
+      }, thresholdMs);
+    });
+
+    el.addEventListener('pointermove', (e) => {
+      if (!timer) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (Math.sqrt(dx * dx + dy * dy) > moveTolerancePx) {
+        clearTimer(); // looks like a scroll/drag, not a long-press
+      }
+    });
+
+    el.addEventListener('pointerup', clearTimer);
+    el.addEventListener('pointercancel', clearTimer);
+    el.addEventListener('pointerleave', clearTimer);
+
+    // Capture phase so this runs before the button's own onclick and
+    // can swallow the trailing synthetic click a long touch-hold sends.
+    el.addEventListener('click', (e) => {
+      if (longPressFired) {
+        longPressFired = false;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    }, true);
+
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      onLongPress();
+    });
+  }
+
   // ---- Row ordering / sorting (Blueprint Section 8a) ----
 
   // Direction-aware alphabetical fallback, used both as the red-block's
@@ -2717,6 +2784,31 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     const titleNote = parsed.classTitle ? (parsed.classTitle + ' — ') : '';
     showToast('Roster loaded — names ON');
     setStatus('Roster loaded: ' + titleNote + parsed.entries.length + ' student(s). Names now showing.');
+  }
+
+  // ---- Long-press the Roster button to clear the roster entirely ----
+  // Gap fill, not a Blueprint requirement: v1.7 collapses Load List +
+  // Clear List + Anonymous into one Roster toggle, but the toggle alone
+  // gives no way back to an EMPTY roster within a session — only
+  // reloading/closing the tab did. Wired up via attachButtonLongPress
+  // in Init below: a normal tap keeps toggling ON/OFF (the button's own
+  // onclick), a long-press (or right-click on desktop) clears.
+  function handleClearRoster() {
+    if (Object.keys(roster).length === 0) {
+      showToast('No roster loaded');
+      return;
+    }
+    const confirmed = window.confirm('Clear roster?\n\nThis removes the loaded roster and turns names off. Scanned data is not affected.');
+    if (!confirmed) return;
+    roster = {};
+    activeRosterClassTitle = '';
+    rosterOn = false;
+    guestLabelMap = {};
+    guestLabelCounter = 0;
+    renderRosterToggleUI();
+    renderTable();
+    showToast('Roster cleared');
+    setStatus('Roster cleared. Scanned data is unaffected.');
   }
 
   // ---- Reset (Blueprint Section 8: "confirm → clears table; roster
@@ -3932,6 +4024,9 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // gone; there's nothing left to switch.)
   loadSavedApiKey();
   renderRosterToggleUI(); // Blueprint v1.7 Section 7: Roster button starts labeled "Roster: OFF"
+  // Long-press (or right-click on desktop) clears the roster; the
+  // button's own onclick="toggleRoster()" handles the normal tap.
+  attachButtonLongPress(document.getElementById('btn-roster'), handleClearRoster);
   updateCameraStateLayout();
 
   // ---------------------------------------------------------------
