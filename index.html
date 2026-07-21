@@ -325,14 +325,16 @@
   #btn-import { grid-column: 3; grid-row: 3; }
   #btn-reset { grid-column: 3; grid-row: 4; }
 
-  /* DEFECT FIX: without this, a long-press on the button triggers the
-     browser's native text-selection callout (highlighted text + "Copy"
-     bubble) instead of the JS long-press handler — the same fix already
-     applied to .editable-cell/.deletable-cell/.header-cell below, just
-     missing here since #btn-roster is the first real <button> in the
-     app to get long-press behavior (attachButtonLongPress, Blueprint
+  /* DEFECT FIX: without this, a long-press on any grid button can
+     trigger the browser's native text-selection callout (highlighted
+     text + "Copy" bubble) instead of/on top of the app's own handling —
+     the same fix already applied to .editable-cell/.deletable-cell/
+     .header-cell below, just missing on buttons until now. Applied to
+     the whole .action-btn class (not just #btn-roster) since any button
+     can catch a stray long touch during a lesson, not only the one with
+     actual long-press logic attached (attachButtonLongPress, Blueprint
      Section 7 roster-clear gap fill). */
-  #btn-roster {
+  .action-btn {
     touch-action: manipulation;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
@@ -2293,6 +2295,15 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       e.preventDefault();
       onLongPress();
     });
+
+    // DEFECT FIX (belt-and-suspenders): the CSS user-select/touch-callout
+    // properties on .action-btn don't reliably suppress every mobile
+    // browser's native long-press text-selection callout on their own —
+    // explicitly cancelling selectstart (and dragstart, since a
+    // long-press-then-drag can also kick off a native drag gesture)
+    // blocks it at the event level regardless of CSS support quirks.
+    el.addEventListener('selectstart', (e) => e.preventDefault());
+    el.addEventListener('dragstart', (e) => e.preventDefault());
   }
 
   // ---- Row ordering / sorting (Blueprint Section 8a) ----
