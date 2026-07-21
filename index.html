@@ -1224,6 +1224,16 @@
 
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<!-- js-aruco2 (Blueprint v1.7 Sections 2/3.1): local ArUco marker
+     detection for Cards identification. Load order is required, not
+     stylistic — aruco.js reads a global CV set by cv.js, and the
+     dictionary file reads a global AR set by aruco.js; each expects
+     the previous script to have already run. Pinned to 2.0.0, the
+     version this integration was verified against (see ArucoEngine
+     below for the verification notes). -->
+<script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/cv.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/aruco.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/dictionaries/aruco_4x4_1000.js"></script>
 <script>
   // ---------------------------------------------------------------
   // ClassScan — Step 1.3 (+ v1.4 Step 1 defect fixes)
@@ -1383,8 +1393,14 @@
     return err;
   }
 
-  async function callGeminiOnce(imageBase64, promptText) {
+  // v1.7 Step 2: images is always an ARRAY of base64 JPEG strings now
+  // (1 or more) — Gemini accepts multiple inline_data parts in a single
+  // request, which is what "one vision call (batched per photo)" (5a)
+  // means: several card crops plus an optional full-photo fallback
+  // image, all in ONE request/response round-trip, not one call each.
+  async function callGeminiOnce(images, promptText) {
     const url = GEMINI_API_BASE + GEMINI_MODEL + ':generateContent';
+    const imageParts = images.map(imgBase64 => ({ inline_data: { mime_type: 'image/jpeg', data: imgBase64 } }));
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -1394,10 +1410,7 @@
       body: JSON.stringify({
         contents: [{
           role: 'user',
-          parts: [
-            { text: promptText },
-            { inline_data: { mime_type: 'image/jpeg', data: imageBase64 } }
-          ]
+          parts: [{ text: promptText }].concat(imageParts)
         }],
         generationConfig: {
           response_mime_type: 'application/json'
@@ -1426,7 +1439,7 @@
 
   const GeminiVisionEngine = {
     name: 'gemini',
-    async analyze(imageBase64, modeSpec) {
+    async analyze(images, modeSpec) {
       if (!currentApiKey()) {
         const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
         throw new Error('No ' + tierLabel + ' API key set — open Settings (⚙️) and paste one.');
@@ -1436,7 +1449,7 @@
       let rawText;
 
       try {
-        rawText = await callGeminiOnce(imageBase64, basePrompt);
+        rawText = await callGeminiOnce(images, basePrompt);
       } catch (err) {
         throw translateGeminiError(err);
       }
@@ -1446,7 +1459,7 @@
       if (!parsed) {
         // One retry with a JSON-only reminder appended (Blueprint Section 12).
         try {
-          rawText = await callGeminiOnce(imageBase64, basePrompt + '\n\nIMPORTANT: reply with JSON only, no prose, no markdown fences.');
+          rawText = await callGeminiOnce(images, basePrompt + '\n\nIMPORTANT: reply with JSON only, no prose, no markdown fences.');
         } catch (err) {
           throw translateGeminiError(err);
         }
@@ -1465,7 +1478,7 @@
 
   const AnthropicVisionEngine = {
     name: 'anthropic',
-    async analyze(imageBase64, modeSpec) {
+    async analyze(images, modeSpec) {
       // TODO: implement if/when an Anthropic vision engine is wired in.
       // Must resolve to the same shape as GeminiVisionEngine:
       // {entries: [...], warnings: [...]}
@@ -1475,13 +1488,226 @@
 
   const VisionEngine = {
     active: GeminiVisionEngine,
-    analyze(imageBase64, modeSpec) {
-      return VisionEngine.active.analyze(imageBase64, modeSpec);
+    // images: ARRAY of base64 JPEG strings, always — even a single-image
+    // call passes a 1-element array (v1.7 Step 2; see callGeminiOnce).
+    analyze(images, modeSpec) {
+      return VisionEngine.active.analyze(images, modeSpec);
     }
   };
 
   // ---------------------------------------------------------------
-  // GLOBAL VISION THROTTLE QUEUE (Blueprint Section 2)
+  // ARUCO ENGINE (Blueprint v1.7 Sections 2, 3.1, 4)
+  // Local, on-device marker detection for Cards identification — the
+  // rest of the app calls ONLY ArucoEngine (mirrors the VisionEngine
+  // discipline above: nothing else touches the AR.* library directly).
+  //
+  // DICT_4X4_50 VERIFICATION NOTES (so a future maintainer doesn't have
+  // to redo this): js-aruco2 ships only 'ARUCO' (7x7) and
+  // 'ARUCO_MIP_36h12' (8x8) built in — no 4x4_50. This app instead
+  // loads js-aruco2's own dictionaries/aruco_4x4_1000.js (an
+  // OpenCV-BSD-licensed file the library ships), which carries the
+  // REAL OpenCV ARUCO_4X4_1000 codewords, and slices the first 50 —
+  // confirmed against OpenCV's own source (opencv/opencv, 4.x branch,
+  // modules/objdetect/src/aruco/aruco_dictionary.cpp) to be EXACTLY how
+  // OpenCV itself derives DICT_4X4_50 from DICT_4X4_1000: a straight
+  // 50-row slice of the same data, no other processing. Independently
+  // verified: all 50 codes unique, 16 bits each, minimum pairwise
+  // Hamming distance 4 (auto-computed by AR.Dictionary itself, not
+  // hardcoded here). A full round-trip was also tested in Node before
+  // this shipped: a synthetic marker bitmap for a given ID, rasterized
+  // by hand from this exact codeList, was fed through a real
+  // AR.Detector and correctly read back as that same ID — which is
+  // also how corners[0..3] below is known to be clockwise starting at
+  // the marker's own top-left corner.
+  if (typeof AR !== 'undefined' && AR.DICTIONARIES && AR.DICTIONARIES.ARUCO_4X4_1000) {
+    AR.DICTIONARIES.DICT_4X4_50 = {
+      nBits: 16,
+      tau: null, // auto-calculated by AR.Dictionary from the actual 50 codes (verified = 4)
+      codeList: AR.DICTIONARIES.ARUCO_4X4_1000.codeList.slice(0, 50)
+    };
+  }
+
+  // ---------------------------------------------------------------
+  // CARD PHYSICAL LAYOUT CONTRACT — PROVISIONAL (Blueprint Sections
+  // 3.1/5/5a). Step 3 (the physical card generator) does not exist yet,
+  // so there is no real card to measure. These numbers are placeholders
+  // needed to make local emptiness-checking and vision-crop generation
+  // structurally functional now; they are NOT a researched layout.
+  // Step 3 must either draw cards matching this exact geometry, or this
+  // one block is what needs updating to match whatever Step 3 designs —
+  // nothing else in the detection pipeline should need to change.
+  //
+  // Coordinate system: "marker widths" (1.0 = one marker side length),
+  // relative to the marker's own local frame as returned by
+  // ArucoEngine.detect() — origin = corners[0] (top-left), +u axis =
+  // corners[0]->corners[1] (rightward along the marker's top edge),
+  // +v axis = corners[0]->corners[3] (downward along the marker's left
+  // edge). A region {u0,v0,u1,v1} is a rectangle in that local frame;
+  // mapMarkerLocalToImage() below converts any (u,v) to an image pixel
+  // via bilinear interpolation, so this works under rotation/tilt
+  // without needing fixed pixel offsets.
+  //
+  // Assumed card layout: marker in the top-left corner (its own u:[0,1]
+  // v:[0,1] footprint), response box filling most of the card below it,
+  // condition bubbles + text in a strip below that.
+  // ---------------------------------------------------------------
+  const CARD_LAYOUT = {
+    // Local emptiness gate ONLY — deliberately narrow (just the response
+    // box, not condition), per Blueprint 5a: "call Gemini ONLY for cards
+    // whose response box is non-empty." A 0.15-marker-width gap below
+    // the marker's own v:[0,1] footprint keeps the marker's own black
+    // border out of the emptiness sample.
+    response: { u0: 0.0, v0: 1.15, u1: 2.8, v1: 3.00 },
+    // Crop sent to vision for a NON-empty card — response + condition
+    // together, since one vision call per card reads both at once.
+    visionCrop: { u0: 0.0, v0: 1.15, u1: 2.8, v1: 3.80 }
+  };
+
+  // A region this small/clipped after clamping to the canvas can't be
+  // sampled or cropped reliably — treated as "needs a rescan", not
+  // guessed either way (never guess-attach, Blueprint 5a rule 4).
+  const MIN_REGION_PIXELS = 400; // e.g. at least a 20x20 sample area
+
+  const DARK_LUMINANCE_THRESHOLD = 110;  // 0-255; below this = "ink", not "paper"
+  const EMPTY_DARK_FRACTION = 0.008;     // >0.8% dark pixels in the response box = "marked"
+
+  // Maps a point in the marker's local (u,v) frame to an image pixel,
+  // via bilinear interpolation across the marker's 4 detected corners.
+  // Works for u,v outside [0,1] too (extrapolation), which is exactly
+  // what's needed since every CARD_LAYOUT region lives outside the
+  // marker's own [0,1]x[0,1] footprint.
+  function mapMarkerLocalToImage(corners, u, v) {
+    const c0 = corners[0], c1 = corners[1], c2 = corners[2], c3 = corners[3];
+    const w00 = (1 - u) * (1 - v), w10 = u * (1 - v), w11 = u * v, w01 = (1 - u) * v;
+    return {
+      x: w00 * c0.x + w10 * c1.x + w11 * c2.x + w01 * c3.x,
+      y: w00 * c0.y + w10 * c1.y + w11 * c2.y + w01 * c3.y
+    };
+  }
+
+  // Maps a {u0,v0,u1,v1} region to its 4 corners in image space (in
+  // u0v0 -> u1v0 -> u1v1 -> u0v1 order, i.e. the same clockwise
+  // convention as marker corners themselves).
+  function mapRegionToImageQuad(corners, region) {
+    return [
+      mapMarkerLocalToImage(corners, region.u0, region.v0),
+      mapMarkerLocalToImage(corners, region.u1, region.v0),
+      mapMarkerLocalToImage(corners, region.u1, region.v1),
+      mapMarkerLocalToImage(corners, region.u0, region.v1)
+    ];
+  }
+
+  // Axis-aligned bounding box of a set of points, clamped to the canvas.
+  // Good enough for the emptiness gate (a rough density estimate) and as
+  // the source rect for the affine crop below; doesn't need to be exact
+  // since Blueprint's own target use (cards held ~1-2m, roughly facing
+  // the camera) keeps rotation modest in practice.
+  function clampedBoundingBox(points, canvasWidth, canvasHeight) {
+    let minX = Math.min.apply(null, points.map(p => p.x));
+    let maxX = Math.max.apply(null, points.map(p => p.x));
+    let minY = Math.min.apply(null, points.map(p => p.y));
+    let maxY = Math.max.apply(null, points.map(p => p.y));
+    minX = Math.max(0, Math.floor(minX));
+    minY = Math.max(0, Math.floor(minY));
+    maxX = Math.min(canvasWidth, Math.ceil(maxX));
+    maxY = Math.min(canvasHeight, Math.ceil(maxY));
+    return { x: minX, y: minY, width: Math.max(0, maxX - minX), height: Math.max(0, maxY - minY) };
+  }
+
+  // Local response-emptiness check (Blueprint 5a step 1). Returns
+  // {reliable, empty, darkFraction} — reliable=false means the region
+  // fell (mostly) outside the frame and shouldn't be trusted either way.
+  function checkResponseEmptiness(canvas, corners) {
+    const quad = mapRegionToImageQuad(corners, CARD_LAYOUT.response);
+    const box = clampedBoundingBox(quad, canvas.width, canvas.height);
+    if (box.width * box.height < MIN_REGION_PIXELS) {
+      return { reliable: false, empty: false, darkFraction: 0 };
+    }
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(box.x, box.y, box.width, box.height);
+    const data = imageData.data;
+    let darkCount = 0;
+    const totalPixels = box.width * box.height;
+    for (let i = 0; i < data.length; i += 4) {
+      const luminance = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (luminance < DARK_LUMINANCE_THRESHOLD) darkCount++;
+    }
+    const darkFraction = darkCount / totalPixels;
+    return { reliable: true, empty: darkFraction <= EMPTY_DARK_FRACTION, darkFraction: darkFraction };
+  }
+
+  // Crops+unwarps one card's vision region (response+condition together)
+  // out of the full captured photo into its own small canvas, correcting
+  // for the marker's rotation/scale/skew via an affine transform (3-point
+  // basis: u0v0, u1v0, u0v1 — the 4th corner isn't independently used,
+  // since 3 points fully determine an affine map; true 4-point
+  // perspective correction would need more than plain Canvas 2D, and
+  // isn't necessary for Blueprint's mostly-frontal capture distance).
+  function cropCardForVision(sourceCanvas, corners) {
+    const region = CARD_LAYOUT.visionCrop;
+    const p0 = mapMarkerLocalToImage(corners, region.u0, region.v0);
+    const p1 = mapMarkerLocalToImage(corners, region.u1, region.v0);
+    const p2 = mapMarkerLocalToImage(corners, region.u0, region.v1);
+
+    const aspect = (region.v1 - region.v0) / (region.u1 - region.u0);
+    const outW = 500;
+    const outH = Math.round(outW * aspect);
+
+    const e1x = p1.x - p0.x, e1y = p1.y - p0.y; // source: u0v0 -> u1v0
+    const e2x = p2.x - p0.x, e2y = p2.y - p0.y; // source: u0v0 -> u0v1
+    const det = e1x * e2y - e2x * e1y;
+    if (!det) return null; // degenerate (collinear corners) — shouldn't happen for a real detection
+
+    const a = (outW * e2y) / det;
+    const c = (-outW * e2x) / det;
+    const b = (-outH * e1y) / det;
+    const d = (outH * e1x) / det;
+    const e = -(a * p0.x + c * p0.y);
+    const f = -(b * p0.x + d * p0.y);
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = outW;
+    outCanvas.height = outH;
+    const outCtx = outCanvas.getContext('2d');
+    outCtx.setTransform(a, b, c, d, e, f);
+    outCtx.drawImage(sourceCanvas, 0, 0);
+    outCtx.setTransform(1, 0, 0, 1, 0, 0); // reset for any future use of this context
+    return outCanvas;
+  }
+
+  const ArucoEngine = {
+    detector: null,
+    ready: false,
+    initError: null,
+    init() {
+      try {
+        if (typeof AR === 'undefined' || !AR.DICTIONARIES || !AR.DICTIONARIES.DICT_4X4_50) {
+          throw new Error('ArUco library failed to load — check your internet connection and reload the page.');
+        }
+        this.detector = new AR.Detector({ dictionaryName: 'DICT_4X4_50' });
+        this.ready = true;
+      } catch (err) {
+        this.initError = err;
+        this.ready = false;
+      }
+    },
+    // Returns AR.Marker[] ({id, corners: [{x,y}x4 clockwise from
+    // top-left], hammingDistance}), or [] if detection isn't available
+    // or nothing was found.
+    detect(canvas) {
+      if (!this.ready) return [];
+      try {
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        return this.detector.detect(imageData) || [];
+      } catch (err) {
+        console.error('ArUco detection error:', err);
+        return [];
+      }
+    }
+  };
+
+
   // All modes funnel vision calls through this so no two calls ever
   // fire closer together than the ACTIVE TIER's throttle allows,
   // regardless of how fast the teacher taps Capture. Free ≈ 6s between
@@ -1834,35 +2060,71 @@
   // ---------------------------------------------------------------
   // CARDS-FRONT VISION PROMPT (Blueprint Section 5, 5a)
   // ---------------------------------------------------------------
-  const CARDS_FRONT_PROMPT = `You are reading a photo of one or more paper response cards used in a classroom.
+  // ---------------------------------------------------------------
+  // CARDS VISION PROMPT (Blueprint v1.7 Sections 5, 5a) — replaces the
+  // old static, name-QR-based CARDS_FRONT_PROMPT. Identity now comes
+  // from the LOCAL ArUco pass, not vision, so this prompt no longer
+  // asks for a name at all in the primary path — it only reads
+  // response/condition fields from pre-cropped, pre-identified card
+  // regions. A prompt is built fresh per capture because its shape
+  // depends on how many crops (cropCount) and whether a full-photo
+  // fallback image is included this time (5a rule 3: printed-name OCR
+  // is a fallback ONLY when a marker fails to decode).
+  //
+  // Response shape either way: {"entries":[...], "warnings":[...]}.
+  // The FIRST cropCount entries (in image order) are crop results
+  // ({fields, confidence} only — no name needed, identity is already
+  // known from the marker). Any entries AFTER that are fallback results
+  // from the full-photo image ({printedName, fields, confidence}).
+  // Which is which is determined by ARRAY POSITION (cropCount, known to
+  // our own code), not by the model self-labeling each entry — more
+  // robust than trusting the model to tag its own output correctly.
+  // ---------------------------------------------------------------
+  function buildCardsVisionPrompt(cropCount, includeFallbackPhoto) {
+    let text = 'You are reading images related to paper response cards used in a classroom.\n\n';
 
-CARD LAYOUT (front face, blue template ink):
-- A printed student name near a small QR code at the top.
-- A "condition" area: bubble options A, B, C, D (may be marked) PLUS a small freeform text box (max 6 characters).
-- One large freeform response box (max 10 characters, block letters). Expected content is usually a number, a single letter, "Yes"/"No", or a short word.
-- Each individual card is outlined by its own bold frame.
+    if (cropCount > 0) {
+      text += 'IMAGES 1-' + cropCount + ': each is a CROPPED REGION from ONE already-identified card \u2014 its response box and condition area only (no name, no marker visible). Each crop may be tilted or slightly rotated.\n\n';
+      text += 'CROP LAYOUT (blue/green template ink):\n';
+      text += '- A "condition" area: bubble options A, B, C, D (may be marked) PLUS a small freeform text box (max 6 characters).\n';
+      text += '- One large freeform response box (max 10 characters, block letters). Expected content is usually a number, a single letter, "Yes"/"No", or a short word.\n\n';
+      text += 'RULES FOR EACH CROP:\n';
+      text += '- Printed template ink is blue or green. Student marks and handwriting are BLACK. Only read BLACK marks/handwriting as student answers \u2014 ignore the printed blue/green template lines and boxes themselves.\n';
+      text += '- Ignore faded, smudged, or off-color marks that look like erased or prior answers.\n';
+      text += '- If a field is unreadable or ambiguous, return your best guess and mark THAT field\u2019s confidence as "low". Rate each field independently \u2014 uncertainty in one field must not lower the confidence of any other field. If you truly cannot make any guess for a field, return an empty string for it.\n';
+      text += '- Never invent data that is not visibly present.\n';
+      text += '- If more than one condition bubble (A-D) appears marked, mark conditionBubble\u2019s confidence as "low" and still report your best guess (or empty string if there is no reasonable guess).\n\n';
+      text += 'FOR EACH OF THE ' + cropCount + ' CROP IMAGES, IN THE SAME ORDER AS THE IMAGES, report an entry with:\n';
+      text += '- "fields.response": the content of the large response box, max 10 characters.\n';
+      text += '- "fields.conditionBubble": which condition bubble is marked \u2014 one of "A", "B", "C", "D", or "" if none marked.\n';
+      text += '- "fields.conditionText": the content of the small condition text box, max 6 characters, or "" if empty.\n';
+      text += '- "confidence": {"response":"high|low","conditionBubble":"high|low","conditionText":"high|low"}.\n\n';
+      text += 'These ' + cropCount + ' results must come FIRST in the "entries" array, in image order.\n\n';
+    }
 
-RULES:
-- Cards may be tilted or rotated in the photo.
-- Multiple cards may appear in one photo (up to about 6). Report ONE entry per card you can see, grouping each card's fields strictly by its own bold frame — never combine fields from two different frames into one entry, and never split one card's fields across two entries.
-- List entries in LEFT-TO-RIGHT order, matching the order the cards physically appear in the photo from left to right. This ordering matters — it is used to match cards to identifiers.
-- If two or more cards overlap, or their frames can't be told apart confidently, do NOT guess which field belongs to which card and do NOT merge them into one entry. Report only what you can confidently attribute to a single, clearly separate frame, and add a short plain-language warning to the "warnings" array describing the overlap (e.g. "2 cards appear to overlap — rescan them separately").
-- Printed template ink is blue or green. Student marks and handwriting are BLACK. Only read BLACK marks/handwriting as student answers — ignore the printed blue/green template lines and boxes themselves.
-- Ignore faded, smudged, or off-color marks that look like erased or prior answers.
-- Ignore any handwriting outside the designated name/condition/response boxes.
-- If a field is unreadable or ambiguous, return your best guess and mark THAT field's confidence as "low". Rate each field independently — uncertainty in one field must not lower the confidence of any other field. If you truly cannot make any guess for a field, return an empty string for it.
-- Never invent data that is not visibly present on the card.
-- If more than one condition bubble (A-D) appears marked on the same card, mark conditionBubble's confidence as "low" and still report your best guess (or empty string if there is no reasonable guess).
+    if (includeFallbackPhoto) {
+      text += (cropCount > 0 ? 'THE LAST IMAGE' : 'THE IMAGE PROVIDED') + ' is a full photo of the same scene, showing one or more complete paper response cards.\n\n';
+      text += 'Each individual card in that photo is outlined by its own bold frame, with a printed student name near a small square marker in one corner, plus the same condition/response layout described above.\n\n';
+      if (cropCount > 0) {
+        text += cropCount + ' card(s) in this photo were ALREADY identified and cropped above (images 1-' + cropCount + ') \u2014 do NOT report those same cards again. ONLY report a card from this full photo if it is a DIFFERENT card not already covered by the crop(s) above (for example, a card whose corner marker could not be read).\n\n';
+      } else {
+        text += 'Report every card you can see.\n\n';
+      }
+      text += 'RULES FOR THE FULL PHOTO:\n';
+      text += '- Cards may be tilted or rotated. Multiple cards may appear (up to about 6). Report ONE entry per card, grouping fields strictly by each card\u2019s own bold frame \u2014 never combine fields from two different frames into one entry, never split one card\u2019s fields across two entries.\n';
+      text += '- If two or more cards overlap, or their frames can\u2019t be told apart confidently, do NOT guess which field belongs to which card. Report only what you can confidently attribute to one clearly separate frame, and add a short plain-language warning to "warnings" (e.g. "2 cards appear to overlap \u2014 rescan them separately").\n';
+      text += '- Same ink-color, confidence, and never-invent-data rules as above.\n';
+      text += '- Ignore any handwriting outside the designated name/condition/response boxes.\n\n';
+      text += 'FOR EACH ADDITIONAL CARD FOUND IN THE FULL PHOTO, append an entry AFTER the crop results (if any) with:\n';
+      text += '- "printedName": the printed student name text near the corner marker (best-effort reading only \u2014 do not guess a name that isn\u2019t printed there).\n';
+      text += '- "fields" and "confidence": same shape as above.\n\n';
+    }
 
-FOR EACH CARD, REPORT:
-- "key": the printed student name text near the QR code (best-effort reading only — do not guess a name that isn't printed there).
-- "fields.response": the content of the large response box, max 10 characters.
-- "fields.conditionBubble": which condition bubble is marked — one of "A", "B", "C", "D", or "" if none marked.
-- "fields.conditionText": the content of the small condition text box, max 6 characters, or "" if empty.
-- "confidence": an object rating EACH field independently, "high" or "low": {"response":"high|low","conditionBubble":"high|low","conditionText":"high|low"}.
+    text += 'Reply with STRICT JSON ONLY \u2014 no prose, no markdown code fences \u2014 in exactly this shape:\n';
+    text += '{"entries":[{"printedName":"<name, fallback entries only>","fields":{"response":"<text>","conditionBubble":"<A|B|C|D|>","conditionText":"<text>"},"confidence":{"response":"high|low","conditionBubble":"high|low","conditionText":"high|low"}}],"warnings":["<short warning strings, or an empty array>"]}';
 
-Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly this shape:
-{"entries":[{"key":"<name>","fields":{"response":"<text>","conditionBubble":"<A|B|C|D|>","conditionText":"<text>"},"confidence":{"response":"high|low","conditionBubble":"high|low","conditionText":"high|low"}}],"warnings":["<short warning strings, or an empty array>"]}`;
+    return text;
+  }
 
   // ---------------------------------------------------------------
   // API KEY / VISION TIER WIRING (Blueprint Section 2)
@@ -2089,23 +2351,15 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // coloring, with every row — scanned or not — in one alphabetical
   // list. The scanned-on-top block layout is deferred to Phase C.
   // ---------------------------------------------------------------
-  let tableData = {}; // key: lowercased trimmed name -> row object
+  let tableData = {}; // key: ArUco marker ID (Cards) as a string, or "name:<ocr'd name>" for a marker-detection-failure fallback row — see isFallbackKey()
   let undoSnapshot = null; // single-level undo (Blueprint Section 8)
-  let roster = {}; // key: lowercased trimmed name -> { displayName, id }
+  let roster = {}; // key: same ID string as above -> { displayName, id }
   let activeRosterClassTitle = ''; // from the unified ROSTER|ClassTitle|... QR payload (Blueprint Section 7)
 
   // ---- Roster ON/OFF toggle (Blueprint v1.7 Section 7 — replaces the
   // old Load List + Clear List + Anonymous trio). Default OFF: names
   // hidden, table/exports show a numeric ID or "Guest N" instead. ----
   let rosterOn = false;
-  // guestLabelMap: key -> stable "Guest N" label, assigned in order of
-  // first appearance this session. Used as the OFF-mode display for any
-  // row that has no roster ID to show (interim rule — once Step 2 adds
-  // ArUco marker IDs, the marker number itself becomes this fallback,
-  // per Blueprint Section 4: "the key IS the number and displays as
-  // Guest N"). Replaces the old anonymousMap random-code approach.
-  let guestLabelMap = {};
-  let guestLabelCounter = 0;
 
   // ---- Table v2 state (Blueprint Section 8a) ----
   // sortState: null = default layout (scanned block newest-first, red
@@ -2154,22 +2408,31 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     return '';
   }
 
-  function getGuestLabel(key) {
-    if (guestLabelMap[key]) return guestLabelMap[key];
-    guestLabelCounter += 1;
-    const label = 'Guest ' + guestLabelCounter;
-    guestLabelMap[key] = label;
-    return label;
+  // A row key is either a real ArUco marker ID (a plain numeric string,
+  // e.g. "7") or a synthetic OCR-fallback key (Blueprint 5a rule 3: a
+  // card whose marker couldn't be detected, identified by printed name
+  // instead) — prefixed "name:" so it can never collide with a real
+  // numeric marker-ID key.
+  function isFallbackKey(key) {
+    return typeof key === 'string' && key.indexOf('name:') === 0;
   }
 
   // Roster-OFF display value for a row (Blueprint Section 7: "OFF =
   // names hidden, table and ALL exports show the numeric ID / Guest N
-  // only"). If this key matches a roster entry that has an ID, show
-  // that ID; otherwise fall back to a stable "Guest N" placeholder.
+  // only"). Cards-mode keys ARE the marker ID itself (Blueprint Section
+  // 4: "if no roster, the key IS the number and displays as Guest N"),
+  // so for a real marker-ID row this needs no roster lookup at all — the
+  // number is already the key. A roster match only supplies the NAME,
+  // never a different number, since the roster is keyed by this same ID.
+  // A fallback row has no numeric ID to show at all (its marker never
+  // decoded), so it always shows its raw OCR'd name instead — there's
+  // nothing to redact behind.
   function getIdentityDisplay(key) {
-    const rosterEntry = roster[key];
-    if (rosterEntry && rosterEntry.id) return rosterEntry.id;
-    return getGuestLabel(key);
+    if (isFallbackKey(key)) {
+      const dataRow = tableData[key];
+      return dataRow ? dataRow.displayName : key;
+    }
+    return 'Guest ' + key;
   }
 
   function getAllRowKeys() {
@@ -2637,10 +2900,13 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   }
 
   // ---- Roster ON/OFF toggle (Blueprint v1.7 Section 7) ----
-  // Unified QR payload now carries a class title:
+  // Unified QR payload carries a class title:
   // ROSTER|ClassTitle|Name1:ID1;Name2:ID2;... — the class title is a
-  // single segment before the first remaining "|"; entries are
-  // unchanged (";"-separated Name:ID pairs, ID optional per entry).
+  // single segment before the first remaining "|". v1.7 Step 2: ID is
+  // now REQUIRED per entry (was optional through Step 1) — the roster
+  // is keyed by ID, not name, since a scanned row's own key IS an ID
+  // (the ArUco marker ID for Cards) from here on, so an entry with no
+  // ID has no key to be stored under and can never be looked up.
   function parseRosterPayload(qrText) {
     const afterPrefix = qrText.slice('ROSTER|'.length);
     const separatorIndex = afterPrefix.indexOf('|');
@@ -2662,25 +2928,26 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     rawEntries.forEach(raw => {
       const parts = raw.split(':');
       const name = (parts[0] || '').trim();
-      const id = (parts[1] || '').trim(); // optional per entry
-      if (name) entries.push({ name: name, id: id });
+      const id = (parts[1] || '').trim();
+      if (name && id) entries.push({ name: name, id: id }); // both required — an ID-less entry can't be keyed
     });
     if (entries.length === 0) {
-      return { ok: false, message: 'Roster QR had no valid student names.' };
+      return { ok: false, message: 'Roster QR had no valid Name:ID pairs.' };
     }
     return { ok: true, entries: entries, classTitle: classTitle };
   }
 
   function applyRoster(entries, classTitle) {
     // Loading a roster QR replaces the current roster with this one.
-    // (Full data-preserving hot-swap re-mapping by ID is a Blueprint
-    // Section 4 behavior that depends on ID-based row keys — out of
-    // scope until Step 2's ArUco identification lands; today's rows are
-    // still keyed by name, so a same-named student naturally carries
-    // forward unaffected.)
+    // v1.7 Step 2: the roster is now keyed by ID (Blueprint Section 4),
+    // the SAME key a scanned row already uses — so hot-swapping to a
+    // new roster works correctly by construction: a scanned row's key
+    // (its marker ID) never changes when the roster changes, only which
+    // NAME that key resolves to. Existing scanned data is automatically
+    // preserved across a roster swap; nothing extra needed here.
     const newRoster = {};
     entries.forEach(e => {
-      newRoster[e.name.toLowerCase()] = { displayName: e.name, id: e.id };
+      newRoster[e.id] = { displayName: e.name, id: e.id };
     });
     roster = newRoster;
     activeRosterClassTitle = classTitle || '';
@@ -2812,8 +3079,6 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     roster = {};
     activeRosterClassTitle = '';
     rosterOn = false;
-    guestLabelMap = {};
-    guestLabelCounter = 0;
   }
 
   // ---- Reset dialog (Blueprint Section 8, extended) ----
@@ -2937,15 +3202,23 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     undoSnapshot = cloneTableData(tableData);
 
     if (fieldType === 'name') {
-      const newKey = value.toLowerCase();
       row.displayName = value;
       // DEFECT FIX (v1.4 Step 1, Defect 3): a manual correction of an
       // unreadable/fallback name is exactly the kind of correction that
       // should clear the amber flag, same as Response/Condition edits do.
       row.nameLowConf = false;
-      if (newKey !== rowKey) {
-        delete tableData[rowKey];
-        tableData[newKey] = row;
+      // A real marker-ID row's key IS its ArUco ID and never changes
+      // here — editing the name only corrects the DISPLAYED name in
+      // place. Only a fallback row (marker detection failed; identified
+      // by OCR'd name instead, Blueprint 5a rule 3) has a key actually
+      // DERIVED from the name, so only that key needs rekeying when the
+      // name is corrected.
+      if (isFallbackKey(rowKey)) {
+        const newKey = 'name:' + value.toLowerCase();
+        if (newKey !== rowKey) {
+          delete tableData[rowKey];
+          tableData[newKey] = row;
+        }
       }
     } else if (fieldType === 'response') {
       row.response = value.slice(0, 10);
@@ -2976,234 +3249,113 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   }
 
   // ---------------------------------------------------------------
-  // MULTI-CARD MATCHING (Blueprint Section 5a — all 7 rules)
-  //
-  // Pure function: given the vision entries for one photo and the QRs
-  // jsQR decoded from it (each with a left-to-right centerX), decides
-  // which entry pairs with which QR, which are left unmatched, and what
-  // (if any) plain-language warning to show. Doesn't touch tableData —
-  // applyVisionResult() turns the result into rows exactly as it always
-  // has, just driven by matches instead of a single qrName override.
+  // MULTI-CARD HANDLING (Blueprint Section 5a, reworked around marker
+  // IDs in v1.7 Step 2 — replaces the old name-QR similarity/order
+  // matching entirely). Identity now comes from WHERE each card's data
+  // came from, decided entirely by captureFrame() before vision is ever
+  // called:
+  //   - emptyMarkers: local ArUco ID + local emptiness check only, zero
+  //     vision involved (5a step 2's "no vision call" fast path).
+  //   - nonEmptyMarkers: local ArUco ID for identity, vision ONLY for
+  //     reading the response/condition fields out of that card's own
+  //     pre-cropped region (matched back by ARRAY POSITION, not fuzzy
+  //     name matching — see buildCardsVisionPrompt's comment).
+  //   - fallback vision entries: marker detection FAILED for these, so
+  //     identity is printed-name OCR instead (5a rule 3), always
+  //     flagged amber (5a rule 7 — an OCR fallback identity is never
+  //     presented as confident data).
+  // Pure function: decides row keys/identity/fields; doesn't touch
+  // tableData itself. applyCardResultsToTable() does that part.
   // ---------------------------------------------------------------
-
-  // Rule 4's "normalized name-string similarity" — case/space-
-  // insensitive comparison. Two knobs below tune how forgiving that
-  // comparison is; both are best-effort defaults pending field-test
-  // feedback, not values pinned by the Blueprint text itself.
-  const NAME_MATCH_MIN_SIMILARITY = 0.6; // how close two names must be (0-1) to be considered a candidate match at all
-  const NAME_MATCH_MIN_MARGIN = 0.15;    // how much better the best candidate must be than the runner-up before it's auto-accepted, so two similarly-close names never get an ambiguous guess
-
-  function normalizeNameForMatch(name) {
-    return (name || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
-  }
-
-  // Levenshtein edit distance — small, dependency-free, and adequate
-  // for comparing short name strings (at most a little OCR/handwriting
-  // noise, not long documents where a faster algorithm would matter).
-  function levenshteinDistance(a, b) {
-    const m = a.length;
-    const n = b.length;
-    if (m === 0) return n;
-    if (n === 0) return m;
-    let prevRow = new Array(n + 1);
-    let curRow = new Array(n + 1);
-    for (let j = 0; j <= n; j++) prevRow[j] = j;
-    for (let i = 1; i <= m; i++) {
-      curRow[0] = i;
-      for (let j = 1; j <= n; j++) {
-        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-        curRow[j] = Math.min(
-          prevRow[j] + 1,       // deletion
-          curRow[j - 1] + 1,    // insertion
-          prevRow[j - 1] + cost // substitution
-        );
-      }
-      const swap = prevRow;
-      prevRow = curRow;
-      curRow = swap;
-    }
-    return prevRow[n];
-  }
-
-  // 1 = identical after normalization, 0 = nothing in common (or either
-  // side blank — an empty printed name is never a "similarity", it's a
-  // missing signal, handled separately by the order-matching fallback).
-  function nameSimilarity(a, b) {
-    const na = normalizeNameForMatch(a);
-    const nb = normalizeNameForMatch(b);
-    if (!na || !nb) return 0;
-    if (na === nb) return 1;
-    const maxLen = Math.max(na.length, nb.length);
-    if (maxLen === 0) return 1;
-    return Math.max(0, 1 - levenshteinDistance(na, nb) / maxLen);
-  }
-
-  /**
-   * @param {Array} entries - result.entries from the vision response (left-to-right order, per the prompt)
-   * @param {Array} qrResults - [{text, centerX}] from the multi-QR decode (Blueprint 5a step 1)
-   * @returns {{matches: Array<{displayName:string, nameLowConf:boolean, entry:Object}>, warnings: Array<string>}}
-   */
-  function matchCardsToQRs(entries, qrResults) {
-    entries = entries || [];
-    qrResults = qrResults || [];
-
-    // Rule 3 — single-pair auto-match, CHECKED FIRST: unconditional,
-    // no name-similarity requirement, no printed name needed. A card
-    // with only a QR and no legible printed name must still resolve to
-    // the QR name whenever the QR decodes.
-    if (qrResults.length === 1 && entries.length === 1) {
-      return {
-        matches: [{ displayName: qrResults[0].text, nameLowConf: false, entry: entries[0] }],
-        warnings: []
-      };
-    }
-
-    const availableEntries = entries.map((entry, idx) => ({ entry: entry, idx: idx, claimed: false }));
-    const availableQRs = qrResults.map((qr, idx) => ({ qr: qr, idx: idx, claimed: false }));
-    const matches = [];
-
-    // Rule 4 — normalized name-string similarity; QR spelling always
-    // wins for the stored key/display. Score every (entry, QR) pair
-    // that has a legible printed name to compare, then accept the
-    // strongest matches first so a confident pair always gets first
-    // claim on its QR rather than losing it to a weaker pair processed
-    // earlier in array order.
-    const candidatePairs = [];
-    availableEntries.forEach(ae => {
-      const printedName = (ae.entry.key || '').toString().trim();
-      if (!printedName) return; // nothing to compare — falls to order-matching (rule 5) or stays unmatched (rule 6)
-      availableQRs.forEach(aq => {
-        const score = nameSimilarity(printedName, aq.qr.text);
-        if (score >= NAME_MATCH_MIN_SIMILARITY) {
-          candidatePairs.push({ ae: ae, aq: aq, score: score });
-        }
-      });
-    });
-    candidatePairs.sort((a, b) => b.score - a.score);
-
-    candidatePairs.forEach(pair => {
-      if (pair.ae.claimed || pair.aq.claimed) return;
-      // Ambiguity guard: only auto-accept if this is a clear winner on
-      // BOTH sides among what's still available — otherwise two
-      // similarly-close names would get an ambiguous guess, which
-      // rule 6 explicitly forbids. Leave it for order-matching instead.
-      const rivalForEntry = candidatePairs.find(p => p !== pair && !p.ae.claimed && !p.aq.claimed && p.ae === pair.ae);
-      const rivalForQR = candidatePairs.find(p => p !== pair && !p.ae.claimed && !p.aq.claimed && p.aq === pair.aq);
-      const entryMargin = rivalForEntry ? pair.score - rivalForEntry.score : 1;
-      const qrMargin = rivalForQR ? pair.score - rivalForQR.score : 1;
-      if (entryMargin < NAME_MATCH_MIN_MARGIN || qrMargin < NAME_MATCH_MIN_MARGIN) return;
-
-      pair.ae.claimed = true;
-      pair.aq.claimed = true;
-      matches.push({ displayName: pair.aq.qr.text, nameLowConf: false, entry: pair.ae.entry });
-    });
-
-    // Rule 5 — order-matching fallback: whatever's left, pair strictly
-    // by left-to-right position (QR centerX vs. the vision array's own
-    // left-to-right order, per the prompt). Only when BOTH sides drain
-    // exactly evenly — pairing an uneven leftover 1-for-1 would silently
-    // guess which surplus entry goes with which QR, which rule 6
-    // forbids ("never guess-attach"). An uneven leftover instead falls
-    // through to rule 6 and gets reported, not guessed.
-    const leftoverEntries = availableEntries.filter(ae => !ae.claimed).sort((a, b) => a.idx - b.idx);
-    const leftoverQRs = availableQRs.filter(aq => !aq.claimed).sort((a, b) => a.qr.centerX - b.qr.centerX);
-    if (leftoverEntries.length > 0 && leftoverEntries.length === leftoverQRs.length) {
-      for (let i = 0; i < leftoverEntries.length; i++) {
-        leftoverEntries[i].claimed = true;
-        leftoverQRs[i].claimed = true;
-        matches.push({ displayName: leftoverQRs[i].qr.text, nameLowConf: false, entry: leftoverEntries[i].entry });
-      }
-    }
-
-    // Rule 6 — leftovers: never guess-attach. Each still gets its own
-    // row (so no data is silently dropped), flagged unmatched (rule 7
-    // amber) and counted toward the plain-language warning.
-    let unmatchedCount = 0;
-
-    availableEntries.filter(ae => !ae.claimed).forEach(ae => {
-      unmatchedCount++;
-      matches.push({
-        displayName: (ae.entry.key || '').toString().trim(), // '' becomes "(unreadable name)" in applyVisionResult
-        nameLowConf: true, // rule 7 — an unmatched identity is never presented as confident data
-        entry: ae.entry
-      });
-    });
-
-    availableQRs.filter(aq => !aq.claimed).forEach(aq => {
-      unmatchedCount++;
-      // A confidently-decoded QR with no card content matched to it —
-      // the identity is QR-confirmed and trustworthy, but there's no
-      // field data to attach, so those are left blank and low-confidence
-      // rather than invented (rule 6: "never guess-attach").
-      matches.push({
-        displayName: aq.qr.text,
-        nameLowConf: false,
-        entry: { key: aq.qr.text, fields: {}, confidence: { response: 'low', conditionBubble: 'low', conditionText: 'low' } }
-      });
-    });
-
+  function buildCardResultsFromMarkers(emptyMarkers, nonEmptyMarkers, visionEntries, cropCount) {
+    const results = [];
     const warnings = [];
-    if (unmatchedCount === 1) {
-      warnings.push('1 card couldn\u2019t be matched \u2014 rescan it alone.');
-    } else if (unmatchedCount > 1) {
-      warnings.push(unmatchedCount + ' cards couldn\u2019t be matched \u2014 rescan them alone.');
-    }
 
-    return { matches: matches, warnings: warnings };
+    // Empty-response markers: fully local, no vision involved at all —
+    // an empty box IS the (confident) reading, not a low-confidence one.
+    emptyMarkers.forEach(marker => {
+      results.push({
+        rowKey: String(marker.id),
+        displayName: null, // resolved in applyCardResultsToTable from the roster, or "Guest <id>"
+        nameLowConf: false,
+        fields: { response: '', conditionBubble: '', conditionText: '' },
+        confidence: { response: 'high', conditionBubble: 'high', conditionText: 'high' }
+      });
+    });
+
+    const cropResults = (visionEntries || []).slice(0, cropCount);
+    const fallbackResults = (visionEntries || []).slice(cropCount);
+
+    // Non-empty markers: vision results matched back by POSITION — the
+    // i-th crop image sent is the i-th nonEmptyMarkers entry, always,
+    // by construction (captureFrame built the crops in this same order).
+    nonEmptyMarkers.forEach((marker, i) => {
+      const entry = cropResults[i];
+      if (!entry) {
+        // Model returned fewer crop results than crops sent — rather
+        // than misalign every marker after this point, leave this
+        // marker's existing data untouched and flag it (5a rule 4:
+        // "that card only is flagged... never guess-attach").
+        warnings.push('1 card (marker ' + marker.id + ') couldn\u2019t be read \u2014 rescan it alone.');
+        return;
+      }
+      results.push({
+        rowKey: String(marker.id),
+        displayName: null,
+        nameLowConf: false,
+        fields: entry.fields || {},
+        confidence: entry.confidence || {}
+      });
+    });
+
+    // Fallback (OCR-identified) entries: marker detection failed for
+    // these cards, so there's no numeric ID to key by at all — key on
+    // the OCR'd name itself instead (prefixed so it can never collide
+    // with a real numeric marker-ID key).
+    fallbackResults.forEach(entry => {
+      let printedName = (entry.printedName || '').toString().trim();
+      const nameUnreadable = !printedName;
+      if (nameUnreadable) printedName = '(unreadable name)';
+      results.push({
+        rowKey: 'name:' + printedName.toLowerCase(),
+        displayName: printedName,
+        nameLowConf: true, // marker-based ID is the trusted path; this is always the exception
+        fields: entry.fields || {},
+        confidence: entry.confidence || {}
+      });
+    });
+
+    return { results: results, warnings: warnings };
   }
 
-  function applyVisionResult(result, qrResults) {
-    const entries = result.entries || [];
-    qrResults = qrResults || [];
-    const visionWarnings = (result.warnings || []).map(w => (w || '').toString().trim()).filter(w => w);
-
-    if (entries.length === 0 && qrResults.length === 0) {
-      showToast('No card detected in that photo — try again');
-      return;
-    }
-
-    const matchResult = matchCardsToQRs(entries, qrResults);
-    const matches = matchResult.matches;
-
-    if (matches.length === 0) {
-      // Only reachable if both inputs were empty, already handled above —
-      // kept as a defensive guard rather than assuming that can't change.
-      showToast('No card detected in that photo — try again');
-      return;
-    }
+  // Writes cardResults into tableData, updates the undo snapshot,
+  // re-renders. Pure data operation — no status/toast messaging here,
+  // since a single capture can apply this in two separate phases (local
+  // empty-marker rows immediately, then vision-derived rows once that
+  // call resolves) and the caller is what knows the full picture to
+  // report back to the person in one combined message.
+  function applyCardResultsToTable(cardResults) {
+    if (cardResults.length === 0) return;
 
     undoSnapshot = cloneTableData(tableData);
 
-    matches.forEach(match => {
-      let displayName = (match.displayName || '').toString().trim();
+    cardResults.forEach(result => {
+      const rowKey = result.rowKey;
+      const fields = result.fields || {};
+      const confidence = result.confidence || {};
 
-      // DEFECT FIX (v1.4 Step 1, Defect 3) / Blueprint 5a rule 7: a name
-      // that falls through to this placeholder is, by definition,
-      // unreadable/fallback data and must be flagged, not presented as
-      // clean data.
-      const nameUnreadable = !displayName;
-      if (nameUnreadable) {
-        displayName = '(unreadable name)';
-      }
-      const nameLowConf = match.nameLowConf || nameUnreadable;
-
-      const entry = match.entry || {};
-      const fields = entry.fields || {};
-      const confidence = entry.confidence || {};
-      const rowKey = displayName.toLowerCase();
-
-      // Per-field confidence (Blueprint Section 5 canon) — each cell's flag
-      // reflects only that field's own uncertainty, not the whole card's.
-      // This is what makes a confident rescan cleanly clear flags: the new
-      // row object is built fresh from this scan's own per-field ratings,
-      // with no leftover state from the previous scan.
+      // Per-field confidence (Blueprint Section 5 canon) — each cell's
+      // flag reflects only that field's own uncertainty, not the whole
+      // card's. This is what makes a confident rescan cleanly clear
+      // flags: the new row object is built fresh from this scan's own
+      // per-field ratings, with no leftover state from the previous scan.
       const responseLowConf = confidence.response === 'low';
       const conditionLowConf = (confidence.conditionBubble === 'low') || (confidence.conditionText === 'low');
 
-      // DEFECT FIX (v1.4 Step 1, Defect 1): a new row's acqOrder and
-      // updatedAt must share the SAME tick (the moment of first
-      // creation); only a rescan of an EXISTING row consumes a fresh
-      // tick, and only for updatedAt — acqOrder carries forward.
+      // A new row's acqOrder and updatedAt must share the SAME tick (the
+      // moment of first creation); only a rescan of an EXISTING row
+      // consumes a fresh tick, and only for updatedAt — acqOrder carries
+      // forward.
       const existingRow = tableData[rowKey];
       let acqOrder, updatedAtTick;
       if (existingRow) {
@@ -3213,6 +3365,21 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
         const creationTick = nextActionTick();
         acqOrder = creationTick;
         updatedAtTick = creationTick;
+      }
+
+      // displayName resolution (Blueprint Section 4): a marker-ID row's
+      // real name comes from the roster if one's loaded; otherwise there
+      // simply isn't one yet, and buildDisplayRow()/getIdentityDisplay()
+      // already know how to show "Guest <id>" for that case — so
+      // dataRow.displayName only needs to carry a REAL name when one is
+      // actually known (a roster match, or a fallback row's own OCR'd
+      // name, already supplied by buildCardResultsFromMarkers above).
+      let displayName = result.displayName;
+      let nameLowConf = result.nameLowConf;
+      if (displayName === null) {
+        const rosterEntry = roster[rowKey];
+        displayName = rosterEntry ? rosterEntry.displayName : ('Guest ' + rowKey);
+        nameLowConf = false; // a marker ID match is never "low confidence" identity
       }
 
       tableData[rowKey] = {
@@ -3235,19 +3402,6 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     // scan-state area, which is the only state this function is ever
     // reached from (mid-capture, camera active).
     if (cameraActive) snapScanTableToTop();
-
-    // Blueprint 5a rule 6 ("flagged in a plain-language warning... the
-    // rest of the photo processes normally") plus any overlap warning
-    // the vision prompt itself reported — combined into one message so
-    // the teacher sees everything from this capture at once, without
-    // blocking the (already-applied) rows that DID resolve cleanly.
-    const combinedWarnings = visionWarnings.concat(matchResult.warnings);
-    if (combinedWarnings.length > 0) {
-      setStatus(combinedWarnings.join(' '));
-      showToast(matches.length + ' card(s) scanned \u2014 see the status line for a warning');
-    } else {
-      setStatus(matches.length > 1 ? matches.length + ' cards added to the table.' : 'Scan added to the table.');
-    }
   }
 
   // ---------------------------------------------------------------
@@ -3797,21 +3951,20 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     capturing = true;
 
     if (typeof jsQR !== 'function') {
-      showToast('QR library failed to load — continuing without QR name-match');
+      showToast('QR library failed to load — continuing without roster-QR checks');
     }
 
-    setStatus('Reading QR code(s)…');
+    setStatus('Reading card markers…');
 
     // Video stays live during sampling (Blueprint Section 6b) — no
     // freeze here. The freeze happens after the burst, once we know
-    // which sampled frame was sharpest. multi:true also runs the
-    // Blueprint 5a step-1 multi-QR pass on that same sharpest frame —
-    // see burstScanQR's JSDoc for why that's a single pass, not one
-    // per sampled frame.
+    // which sampled frame was sharpest. multi:true still runs a QR pass
+    // on that same frame too, purely to catch a stray roster QR
+    // photographed by mistake with Capture instead of the Roster button.
     const burstResult = await burstScanQR(videoEl, canvasEl, {
       multi: true,
       onRetry: function (nextAttempt, maxAttempts) {
-        setStatus('Reading QR code(s)… (try ' + nextAttempt + ' of ' + maxAttempts + ')');
+        setStatus('Reading card markers… (try ' + nextAttempt + ' of ' + maxAttempts + ')');
       }
     });
 
@@ -3831,8 +3984,8 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
     }
 
     // Freeze: show the SHARPEST sampled frame as the captured still
-    // (Blueprint Section 6b — this is also the frame sent to vision
-    // below), now that live sampling is done.
+    // (Blueprint Section 6b — this is also the frame ArUco detection and
+    // vision both run against), now that live sampling is done.
     canvasEl.width = burstResult.bestCanvas.width;
     canvasEl.height = burstResult.bestCanvas.height;
     canvasEl.getContext('2d').drawImage(burstResult.bestCanvas, 0, 0);
@@ -3843,17 +3996,9 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
 
     const allQrResults = burstResult.qrResults || [];
     // A roster QR photographed with the main Capture button, not the
-    // Roster toggle's own scan flow — check EVERY decoded QR, not just
-    // the first, now that a photo can legitimately contain several.
-    // Stop here entirely if any is found: don't call vision on a
-    // roster-QR photo, which would only fail with a confusing mismatch
-    // a moment later.
+    // Roster toggle's own scan flow — stop here entirely rather than
+    // running ArUco/vision on a roster-QR photo.
     const rosterQrDetected = allQrResults.some(qr => qr.text.startsWith('ROSTER|'));
-    // Name-QRs only, in case a roster QR was mixed into the same photo —
-    // an unsupported/edge scenario, but this keeps it from polluting
-    // the matching pool if it somehow parses that far.
-    const qrResults = allQrResults.filter(qr => !qr.text.startsWith('ROSTER|'));
-
     if (rosterQrDetected) {
       setStatus('That\'s a roster QR — stop the camera and use the Roster button instead of Capture.');
       showToast('Use the Roster button for a roster QR');
@@ -3861,38 +4006,155 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       return;
     }
 
+    // ---- Local ArUco pass (Blueprint v1.7 Sections 3.1, 5a step 1) ----
+    if (!ArucoEngine.ready) {
+      setStatus('ArUco library failed to load — check your internet connection and reload the page.');
+      showToast('ArUco library unavailable');
+      resumeLiveView(false);
+      return;
+    }
+
+    const markers = ArucoEngine.detect(canvasEl);
+
+    const emptyMarkers = [];
+    const nonEmptyMarkers = [];
+    let unreliableCount = 0;
+
+    markers.forEach(marker => {
+      const check = checkResponseEmptiness(canvasEl, marker.corners);
+      if (!check.reliable) {
+        // Too close to the frame edge to sample reliably — never guess
+        // either way (Blueprint 5a rule 4); leave this card's existing
+        // data untouched and flag it instead.
+        unreliableCount++;
+        return;
+      }
+      (check.empty ? emptyMarkers : nonEmptyMarkers).push(marker);
+    });
+
+    const edgeWarnings = [];
+    if (unreliableCount === 1) {
+      edgeWarnings.push('1 card was too close to the frame edge to read \u2014 move it fully into view and rescan.');
+    } else if (unreliableCount > 1) {
+      edgeWarnings.push(unreliableCount + ' cards were too close to the frame edge to read \u2014 move them fully into view and rescan.');
+    }
+
+    // Empty-response markers complete IMMEDIATELY and locally — zero
+    // vision calls (Blueprint 5a step 2), and applied right away rather
+    // than bundled with the vision-dependent cards below, so they're not
+    // held hostage by whether that separate call succeeds or fails.
+    let localCount = 0;
+    if (emptyMarkers.length > 0) {
+      const localBuild = buildCardResultsFromMarkers(emptyMarkers, [], [], 0);
+      applyCardResultsToTable(localBuild.results);
+      localCount = localBuild.results.length;
+    }
+
+    // ---- Fully local capture: every detected marker was empty ----
+    if (markers.length > 0 && nonEmptyMarkers.length === 0) {
+      resumeLiveView(true);
+      if (edgeWarnings.length > 0) {
+        setStatus(edgeWarnings.join(' '));
+        showToast(localCount + ' card(s) scanned \u2014 see the status line for a warning');
+      } else {
+        setStatus(localCount > 1 ? localCount + ' cards added to the table (local \u2014 no responses to read).' : 'Scan added to the table (local \u2014 no response to read).');
+      }
+      return;
+    }
+
+    // ---- Nothing detected locally at all: whole-photo OCR fallback ----
+    if (markers.length === 0) {
+      if (!currentApiKey()) {
+        const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
+        setStatus('No markers detected, and no ' + tierLabel + ' API key set to fall back to name reading \u2014 open Settings (\u2699\ufe0f).');
+        showToast(tierLabel + ' API key missing \u2014 open Settings');
+        resumeLiveView(false);
+        return;
+      }
+      setStatus('No markers detected \u2014 falling back to reading printed names…');
+      const base64 = canvasEl.toDataURL('image/jpeg', 0.85).split(',')[1];
+      await runVisionCallWithRateLimitHandling({
+        images: [base64],
+        cropCount: 0,
+        nonEmptyMarkers: [],
+        localCount: localCount,
+        extraWarnings: edgeWarnings
+      });
+      return;
+    }
+
+    // ---- Standard path: at least one non-empty marker needs vision ----
     if (!currentApiKey()) {
       const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
-      setStatus('No ' + tierLabel + ' API key set — open Settings (⚙️) and paste one.');
+      setStatus((localCount > 0 ? localCount + ' card(s) added locally. ' : '') + 'No ' + tierLabel + ' API key set — open Settings (\u2699\ufe0f) and paste one.');
       showToast(tierLabel + ' API key missing — open Settings');
       resumeLiveView(false);
       return;
     }
 
-    setStatus('Sending photo to the vision service…');
+    const crops = [];
+    const cropMarkers = [];
+    nonEmptyMarkers.forEach(marker => {
+      const cropCanvas = cropCardForVision(canvasEl, marker.corners);
+      if (!cropCanvas) return; // degenerate geometry — shouldn't happen for a real detection
+      crops.push(cropCanvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+      cropMarkers.push(marker);
+    });
 
-    const dataUrl = canvasEl.toDataURL('image/jpeg', 0.85);
-    const base64 = dataUrl.split(',')[1];
+    const fullPhotoBase64 = canvasEl.toDataURL('image/jpeg', 0.85).split(',')[1];
+    const images = crops.concat([fullPhotoBase64]);
 
-    await runVisionCallWithRateLimitHandling(base64, qrResults);
+    setStatus('Sending ' + crops.length + ' card region(s) to the vision service…');
+
+    await runVisionCallWithRateLimitHandling({
+      images: images,
+      cropCount: crops.length,
+      nonEmptyMarkers: cropMarkers,
+      localCount: localCount,
+      extraWarnings: edgeWarnings
+    });
   }
 
-  // Runs the Cards-front vision call, and if it fails specifically with
-  // a Free-tier rate limit (429), shows the Rate-Limit dialog instead of
-  // the generic error toast (Blueprint Section 2). Whichever button the
-  // person taps, this same in-flight capture is what gets resolved —
-  // "Wait" just lets the normal throttle queue retry it, "💲 Turbo"
-  // switches tier and immediately retries this exact capture with the
-  // new key/throttle, which is what "reprocesses the pending queue"
-  // means in a single-capture-at-a-time pipeline (PDF Import's
-  // multi-page queue, Section 6a, doesn't exist yet to reprocess).
-  async function runVisionCallWithRateLimitHandling(base64, qrResults) {
+  // Runs the Cards vision call (batched crops + optional full-photo
+  // fallback image, per captureFrame above), and if it fails
+  // specifically with a Free-tier rate limit (429), shows the
+  // Rate-Limit dialog instead of the generic error toast (Blueprint
+  // Section 2). Whichever button the person taps, this same in-flight
+  // capture is what gets resolved — "Wait" just lets the normal throttle
+  // queue retry it, "💲 Turbo" switches tier and immediately retries this
+  // exact capture with the new key/throttle.
+  async function runVisionCallWithRateLimitHandling(captureBundle) {
+    const images = captureBundle.images;
+    const cropCount = captureBundle.cropCount;
+    const nonEmptyMarkers = captureBundle.nonEmptyMarkers || [];
+    const localCount = captureBundle.localCount || 0;
+    const extraWarnings = captureBundle.extraWarnings || [];
+    const includeFallbackPhoto = images.length > cropCount;
+    const prompt = buildCardsVisionPrompt(cropCount, includeFallbackPhoto);
+
     try {
-      const result = await enqueueVisionCall(() =>
-        VisionEngine.analyze(base64, { prompt: CARDS_FRONT_PROMPT })
-      );
-      applyVisionResult(result, qrResults); // sets its own final status line (success, or a combined warning)
+      const result = await enqueueVisionCall(() => VisionEngine.analyze(images, { prompt: prompt }));
+      const visionEntries = result.entries || [];
+      const visionWarnings = (result.warnings || []).map(w => (w || '').toString().trim()).filter(w => w);
+
+      const buildResult = buildCardResultsFromMarkers([], nonEmptyMarkers, visionEntries, cropCount);
+      applyCardResultsToTable(buildResult.results);
+
+      const totalCount = localCount + buildResult.results.length;
       resumeLiveView(true);
+
+      const combinedWarnings = extraWarnings.concat(visionWarnings).concat(buildResult.warnings);
+      if (totalCount === 0) {
+        setStatus(combinedWarnings.length > 0 ? combinedWarnings.join(' ') : 'No card detected in that photo — try again.');
+        showToast('No card detected in that photo — try again');
+        return;
+      }
+      if (combinedWarnings.length > 0) {
+        setStatus(combinedWarnings.join(' '));
+        showToast(totalCount + ' card(s) scanned \u2014 see the status line for a warning');
+      } else {
+        setStatus(totalCount > 1 ? totalCount + ' cards added to the table.' : 'Scan added to the table.');
+      }
     } catch (err) {
       if (err && err.isRateLimit && activeTier === 'free') {
         const choice = await showRateLimitDialog();
@@ -3907,21 +4169,24 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
           setActiveTier('turbo');
           showToast('Switched to 💲 Turbo — retrying this scan');
           setStatus('Retrying with 💲 Turbo…');
-          await runVisionCallWithRateLimitHandling(base64, qrResults);
+          await runVisionCallWithRateLimitHandling(captureBundle);
           return;
         }
         // "Wait" — let the normal throttle queue retry naturally on the
-        // next Capture tap; don't auto-retry silently in the background,
-        // since a queued Free-tier retry could sit for several more
-        // seconds with no camera control feedback.
+        // next Capture tap; don't auto-retry silently in the background.
         setStatus('Still on Free tier — tap Capture again when ready.');
         resumeLiveView(false);
         return;
       }
 
       const msg = (err && err.message) || 'Scan not understood — try again.';
-      setStatus(msg);
-      showToast(msg);
+      // Local (zero-vision) cards from this SAME capture already made it
+      // into the table before this call ever started — say so, so a
+      // vision failure doesn't read as "nothing happened" when part of
+      // it actually did.
+      const finalMsg = localCount > 0 ? (localCount + (localCount > 1 ? ' cards' : ' card') + ' added locally. ' + msg) : msg;
+      setStatus(finalMsg);
+      showToast(finalMsg);
       resumeLiveView(false);
     }
   }
@@ -4061,6 +4326,7 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
   // gone; there's nothing left to switch.)
   loadSavedApiKey();
   renderRosterToggleUI(); // Blueprint v1.7 Section 7: Roster button starts labeled "Roster: OFF"
+  ArucoEngine.init(); // Blueprint v1.7 Section 3.1 — failure here doesn't crash the app; captureFrame() checks .ready and reports it clearly when Capture is actually tapped
   updateCameraStateLayout();
 
   // ---------------------------------------------------------------
@@ -4082,8 +4348,6 @@ Reply with STRICT JSON ONLY — no prose, no markdown code fences — in exactly
       roster = {}; // Section 7: roster persists "until... tab close"
       activeRosterClassTitle = '';
       rosterOn = false; // Section 7: toggle defaults OFF at every app launch, same as Anonymous used to
-      guestLabelMap = {};
-      guestLabelCounter = 0;
       sortState = null; // table v2 view-state shouldn't bleed into a "new" session either
       headerLabels = {};
       sessionActionCounter = 0;
