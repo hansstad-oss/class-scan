@@ -1069,7 +1069,7 @@
            dedicated row. -->
       <button id="tier-indicator" class="preview-overlay-btn tier-free" onclick="handleTierBadgeTap()">FREE</button>
       <button class="preview-overlay-btn" id="torch-toggle" onclick="toggleTorch()">🔦 Flashlight</button>
-      <button class="preview-overlay-btn" id="submode-toggle" onclick="notReady('Discrete/Continuous switch')">Discrete</button>
+      <button class="preview-overlay-btn" id="submode-toggle" onclick="toggleCardFaceMode()">Discrete</button>
     </div>
 
     <!-- ============ BUTTON BAR ============ -->
@@ -1672,6 +1672,197 @@
     outCtx.drawImage(sourceCanvas, 0, 0);
     outCtx.setTransform(1, 0, 0, 1, 0, 0); // reset for any future use of this context
     return outCanvas;
+  }
+
+  // ---------------------------------------------------------------
+  // BACK-FACE LOCAL OMR (Blueprint v1.8 Sections 3.1, 10a — Master
+  // Workflow 5 Step 4). Condition A/B + the Yes/No/N-A block + the
+  // 0-12+More block, read entirely on-device from the ArUco marker as
+  // positional anchor. NO vision call for this face, ever.
+  //
+  // GEOMETRY SOURCE OF TRUTH: these u,v centers are computed directly
+  // from toolkit.html's ACTUAL back-card generator (Step 3, as
+  // debugged/shipped across this conversation) — marker 7cm @ 0.4in
+  // inset, landscape 11x8.5in page — NOT from the older CARD_LAYOUT
+  // comment above (which describes a "condition strip at v:[1.1,1.6]
+  // spanning u:[0,2.8]" that does not match either this toolkit.html
+  // or a 7cm-marker coordinate system; that comment predates this
+  // build and is now stale — flagged separately in chat, not fixed
+  // here since it's front-face code and out of this step's scope).
+  // Units: "marker widths" (1.0 = this marker's own detected side
+  // length), same convention as CARD_LAYOUT above, via the same
+  // mapMarkerLocalToImage()/mapRegionToImageQuad() functions.
+  //
+  // SPEC NOTE (flagged, not silently resolved): Blueprint Section 5
+  // mentions "condition bubble A-D" and "21 labeled response bubbles"
+  // for the back face; Section 10a's actual geometry (marked
+  // authoritative for card layout) specifies only bubbles A and B for
+  // Condition, and Yes/No/N-A (3) + 0-12+More (14) = 17 response
+  // bubbles, 19 total including Condition — not 21, and no C/D exist
+  // on the printed card. Implemented here exactly as 10a specifies and
+  // as toolkit.html actually prints, since reading for bubbles that
+  // aren't physically on the card would be meaningless.
+  const CARD_LAYOUT_BACK = {
+    conditionA: { label: 'A', u: 3.1569, v: 0.2721 },
+    conditionB: { label: 'B', u: 3.1569, v: 0.5806 },
+    yesNoNa: [
+      { label: 'Yes', u: 1.3629, v: 0.9616 },
+      { label: 'No',  u: 1.9434, v: 0.9616 },
+      { label: 'N/A', u: 2.5240, v: 0.9616 }
+    ],
+    numberBlock: [
+      { label: '0', u: 0.0726, v: 1.4173 }, { label: '1', u: 0.5806, v: 1.4173 },
+      { label: '2', u: 1.0886, v: 1.4173 }, { label: '3', u: 1.5966, v: 1.4173 },
+      { label: '4', u: 2.1046, v: 1.4173 },
+      { label: '5', u: 0.0726, v: 2.0523 }, { label: '6', u: 0.5806, v: 2.0523 },
+      { label: '7', u: 1.0886, v: 2.0523 }, { label: '8', u: 1.5966, v: 2.0523 },
+      { label: '9', u: 2.1046, v: 2.0523 },
+      { label: '10', u: 0.0726, v: 2.6873 }, { label: '11', u: 0.5806, v: 2.6873 },
+      { label: '12', u: 1.0886, v: 2.6873 }, { label: 'More', u: 1.5966, v: 2.6873 }
+    ]
+  };
+
+  // Sample region half-width around each bubble CENTER, in u-units.
+  // Bubbles print at 0.4in diameter (0.4/M ~= 0.145 u-units); this
+  // samples a small square well inside that circle (~28% of the
+  // diameter each side) so the printed template-color border stroke
+  // itself is never counted as a "mark" — only genuine interior ink.
+  const BUBBLE_SAMPLE_HALF_U = 0.028;
+
+  // A bubble sample this small/clipped can't be trusted either way —
+  // same "never guess-attach" principle as MIN_REGION_PIXELS above,
+  // just scaled down for a single small bubble instead of the whole
+  // response box.
+  const MIN_BUBBLE_SAMPLE_PIXELS = 25;
+
+  // Fill-fraction thresholds for a bubble's sampled interior.
+  //  < BUBBLE_EMPTY_MAX        -> clearly empty
+  //  >= BUBBLE_EMPTY_MAX and
+  //  <  BUBBLE_FILLED_MIN      -> ambiguous (faint/partial mark)
+  //  >= BUBBLE_FILLED_MIN      -> clearly filled
+  const BUBBLE_EMPTY_MAX = 0.15;
+  const BUBBLE_FILLED_MIN = 0.35;
+
+  // Dark-pixel fraction inside one bubble's interior sample region.
+  // Reuses the exact same quad-mapping + bounding-box + luminance-loop
+  // primitives as checkResponseEmptiness above, just for a much smaller
+  // region — deliberately not a new pixel-sampling mechanism.
+  function sampleBubbleFillFraction(canvas, corners, u, v) {
+    const region = {
+      u0: u - BUBBLE_SAMPLE_HALF_U, v0: v - BUBBLE_SAMPLE_HALF_U,
+      u1: u + BUBBLE_SAMPLE_HALF_U, v1: v + BUBBLE_SAMPLE_HALF_U
+    };
+    const quad = mapRegionToImageQuad(corners, region);
+    const box = clampedBoundingBox(quad, canvas.width, canvas.height);
+    if (box.width * box.height < MIN_BUBBLE_SAMPLE_PIXELS) {
+      return { reliable: false, fillFraction: 0 };
+    }
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(box.x, box.y, box.width, box.height);
+    const data = imageData.data;
+    let darkCount = 0;
+    const totalPixels = box.width * box.height;
+    for (let i = 0; i < data.length; i += 4) {
+      const luminance = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (luminance < DARK_LUMINANCE_THRESHOLD) darkCount++;
+    }
+    return { reliable: true, fillFraction: darkCount / totalPixels };
+  }
+
+  // Reads one block of mutually-exclusive bubbles (e.g. Condition A/B,
+  // or Yes/No/N-A, or the 0-12+More row set) and returns a best-guess
+  // value + confidence, per Blueprint 10a: "Multiple marks in one
+  // block -> best guess + low-confidence (amber) flag."
+  //   - exactly one bubble clearly filled, nothing else ambiguous+ -> high confidence
+  //   - exactly one clearly filled, but another is ambiguous       -> low confidence (still uses the clear one)
+  //   - 2+ clearly filled                                          -> low confidence, best guess = highest fill fraction
+  //   - 0 clearly filled, 1+ ambiguous                             -> low confidence, best guess = highest-fraction ambiguous bubble
+  //   - nothing filled or ambiguous                                -> high confidence, value ''
+  // reliable=false (any bubble's sample too small/clipped) -> caller
+  // must treat this like checkResponseEmptiness's unreliable case:
+  // leave existing data untouched, flag for rescan, never guess.
+  function readBubbleBlock(canvas, corners, bubbleDefs) {
+    const readings = [];
+    for (let i = 0; i < bubbleDefs.length; i++) {
+      const b = bubbleDefs[i];
+      const sample = sampleBubbleFillFraction(canvas, corners, b.u, b.v);
+      if (!sample.reliable) {
+        return { value: '', confidence: 'low', reliable: false };
+      }
+      readings.push({ label: b.label, fillFraction: sample.fillFraction });
+    }
+
+    const filled = readings.filter(r => r.fillFraction >= BUBBLE_FILLED_MIN);
+    const ambiguous = readings.filter(r => r.fillFraction >= BUBBLE_EMPTY_MAX && r.fillFraction < BUBBLE_FILLED_MIN);
+
+    if (filled.length === 0 && ambiguous.length === 0) {
+      return { value: '', confidence: 'high', reliable: true };
+    }
+    if (filled.length === 1 && ambiguous.length === 0) {
+      return { value: filled[0].label, confidence: 'high', reliable: true };
+    }
+    if (filled.length >= 1) {
+      // 1 filled + some ambiguous, OR 2+ filled: best guess = highest
+      // fraction among filled; either way this is a low-confidence read.
+      const best = filled.reduce((a, b2) => (b2.fillFraction > a.fillFraction ? b2 : a));
+      return { value: best.label, confidence: 'low', reliable: true };
+    }
+    // Only ambiguous readings, nothing clearly filled: best guess =
+    // strongest ambiguous mark, still low confidence.
+    const bestAmbiguous = ambiguous.reduce((a, b2) => (b2.fillFraction > a.fillFraction ? b2 : a));
+    return { value: bestAmbiguous.label, confidence: 'low', reliable: true };
+  }
+
+  // Combined Response formatting for the back face (ASSUMPTION,
+  // flagged in chat): the existing table schema has ONE `response`
+  // field/column, but the back face has TWO independent bubble blocks
+  // (Yes/No/N-A and 0-12+More) that both Blueprint 3.1's prose groups
+  // under "the response bubbles." No exact combined format is
+  // specified anywhere in the Blueprint, so this picks a compact,
+  // human-readable one that fits the EXISTING 10-char truncation in
+  // applyCardResultsToTable: "<YesNoNA> <Number>" when both are
+  // answered (e.g. "Yes 7", "N/A More" - both under 10 chars), or just
+  // whichever half is answered if only one is. Confirm with Fable 5 if
+  // a different format (or a schema/column change) was actually meant.
+  function formatBackResponse(yesNoNaValue, numberValue) {
+    if (yesNoNaValue && numberValue) return yesNoNaValue + ' ' + numberValue;
+    if (yesNoNaValue) return yesNoNaValue;
+    if (numberValue) return numberValue;
+    return '';
+  }
+
+  // Top-level: reads one back-face card's Condition + Response bubbles
+  // entirely locally. Returns the SAME {fields, confidence, reliable}
+  // shape buildCardResultsFromMarkers/applyCardResultsToTable already
+  // expect from a front-face vision entry, so the existing table-write
+  // path (applyCardResultsToTable) needs no changes at all to accept
+  // back-face results.
+  function readBackFaceCard(canvas, corners) {
+    const conditionRead = readBubbleBlock(canvas, corners, [CARD_LAYOUT_BACK.conditionA, CARD_LAYOUT_BACK.conditionB]);
+    if (!conditionRead.reliable) return { reliable: false };
+
+    const yesNoNaRead = readBubbleBlock(canvas, corners, CARD_LAYOUT_BACK.yesNoNa);
+    if (!yesNoNaRead.reliable) return { reliable: false };
+
+    const numberRead = readBubbleBlock(canvas, corners, CARD_LAYOUT_BACK.numberBlock);
+    if (!numberRead.reliable) return { reliable: false };
+
+    const response = formatBackResponse(yesNoNaRead.value, numberRead.value);
+    const responseConfidence = (yesNoNaRead.confidence === 'low' || numberRead.confidence === 'low') ? 'low' : 'high';
+
+    return {
+      reliable: true,
+      fields: {
+        response: response,
+        conditionBubble: conditionRead.value,
+        conditionText: '' // back face has no freeform condition text box (10a) — front-only field
+      },
+      confidence: {
+        response: responseConfidence,
+        conditionBubble: conditionRead.confidence,
+        conditionText: 'high'
+      }
+    };
   }
 
   const ArucoEngine = {
@@ -3327,8 +3518,44 @@
     return { results: results, warnings: warnings };
   }
 
-  // Writes cardResults into tableData, updates the undo snapshot,
-  // re-renders. Pure data operation — no status/toast messaging here,
+  // Back-face parallel to buildCardResultsFromMarkers above — same
+  // per-result shape ({rowKey, displayName, nameLowConf, fields,
+  // confidence}), so applyCardResultsToTable() needs no changes to
+  // accept these. Every reading here is 100% local (readBackFaceCard);
+  // there is no vision-entries argument because there is no vision
+  // call on this path at all (Master Workflow 5 Step 4 requirement).
+  // Markers whose bubble regions couldn't be sampled reliably (edge of
+  // frame) are reported as warnings and otherwise skipped — same
+  // never-guess-attach contract as the front-face path.
+  function buildBackFaceResultsFromMarkers(canvas, markers) {
+    const results = [];
+    const warnings = [];
+    let unreliableCount = 0;
+
+    markers.forEach(marker => {
+      const read = readBackFaceCard(canvas, marker.corners);
+      if (!read.reliable) {
+        unreliableCount++;
+        return;
+      }
+      results.push({
+        rowKey: String(marker.id),
+        displayName: null,
+        nameLowConf: false,
+        fields: read.fields,
+        confidence: read.confidence
+      });
+    });
+
+    if (unreliableCount === 1) {
+      warnings.push('1 card\u2019s bubbles were too close to the frame edge to read \u2014 move it fully into view and rescan.');
+    } else if (unreliableCount > 1) {
+      warnings.push(unreliableCount + ' cards\u2019 bubbles were too close to the frame edge to read \u2014 move them fully into view and rescan.');
+    }
+
+    return { results: results, warnings: warnings };
+  }
+
   // since a single capture can apply this in two separate phases (local
   // empty-marker rows immediately, then vision-derived rows once that
   // call resolves) and the caller is what knows the full picture to
@@ -3881,13 +4108,37 @@
   let torchOn = false;
   let capturing = false;
 
+  // Front/back face reading-path selector (Master Workflow 5 Step 4).
+  // SCOPE NOTE (flagged, not silently expanded): this toggles which
+  // LOCAL READING PATH the next Capture tap uses — 'front' keeps the
+  // existing ArUco-ID + emptiness-check + vision-for-nonempty pipeline
+  // unchanged; 'back' routes to the new fully-local OMR pipeline below.
+  // It does NOT build Blueprint 3.1's true "Continuous sub-mode"
+  // (auto-sampling stream, per-key cooldown, beep/vibrate) — that is a
+  // separate, later Build Phase 13 item. The button/label still reads
+  // "Discrete"/"Continuous" per Blueprint's own naming so it's ready to
+  // gain real streaming behavior later without a rename; today it's a
+  // manual face-mode switch, and Capture is still one single-shot photo
+  // either way.
+  let cardFaceMode = 'front';
+
   const videoEl = document.getElementById('camera-video');
   const canvasEl = document.getElementById('freeze-canvas');
   const placeholderEl = document.getElementById('camera-placeholder');
   const bannerEl = document.getElementById('ready-banner');
   const startCaptureBtn = document.getElementById('start-capture-btn');
   const torchToggleBtn = document.getElementById('torch-toggle');
+  const submodeToggleBtn = document.getElementById('submode-toggle');
   const statusLineEl = document.getElementById('status-text');
+
+  // Manual front/back switch (see cardFaceMode scope note above).
+  function toggleCardFaceMode() {
+    cardFaceMode = (cardFaceMode === 'front') ? 'back' : 'front';
+    submodeToggleBtn.textContent = (cardFaceMode === 'front') ? 'Discrete' : 'Continuous';
+    setStatus(cardFaceMode === 'front'
+      ? 'Front-face mode: freeform response, read by vision when non-empty.'
+      : 'Back-face mode: Condition + response bubbles, read fully locally (no vision call).');
+  }
 
   function setStatus(msg) {
     statusLineEl.textContent = msg;
@@ -4014,6 +4265,38 @@
     }
 
     const markers = ArucoEngine.detect(canvasEl);
+
+    // ---- Back-face branch (Master Workflow 5 Step 4): fully local, ----
+    // ---- no vision call, ever, on this path.                     ----
+    if (cardFaceMode === 'back') {
+      if (markers.length === 0) {
+        // No vision fallback here on purpose — Step 4's requirement is
+        // zero vision calls for the back face. A card whose marker
+        // isn't found on this path simply can't be identified locally;
+        // unlike front-face's whole-photo OCR fallback, back-face mode
+        // never falls back to a vision call to preserve that guarantee.
+        resumeLiveView(false);
+        setStatus('No markers detected on this photo — reposition and rescan (back-face mode never calls vision).');
+        showToast('No markers detected');
+        return;
+      }
+      const backBuild = buildBackFaceResultsFromMarkers(canvasEl, markers);
+      applyCardResultsToTable(backBuild.results);
+      resumeLiveView(true);
+      const count = backBuild.results.length;
+      if (count === 0) {
+        setStatus(backBuild.warnings.length > 0 ? backBuild.warnings.join(' ') : 'No card could be read from that photo — try again.');
+        showToast('No card could be read — try again');
+        return;
+      }
+      if (backBuild.warnings.length > 0) {
+        setStatus(backBuild.warnings.join(' '));
+        showToast(count + ' card(s) scanned (local) — see the status line for a warning');
+      } else {
+        setStatus(count > 1 ? count + ' cards added to the table (local — no vision call).' : 'Scan added to the table (local — no vision call).');
+      }
+      return;
+    }
 
     const emptyMarkers = [];
     const nonEmptyMarkers = [];
