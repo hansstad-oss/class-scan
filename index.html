@@ -4800,4 +4800,315 @@
       resumeLiveView(true);
       if (edgeWarnings.length > 0) {
         setStatus(edgeWarnings.join(' '));
-        showToast(localCount + ' card(s) scanned \u2014 see the status line for 
+        showToast(localCount + ' card(s) scanned \u2014 see the status line for a warning');
+      } else {
+        setStatus(localCount > 1 ? localCount + ' cards added to the table (local \u2014 no responses to read).' : 'Scan added to the table (local \u2014 no response to read).');
+      }
+      return;
+    }
+
+    // ---- Nothing detected locally at all: whole-photo OCR fallback ----
+    if (markers.length === 0) {
+      if (!currentApiKey()) {
+        const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
+        setStatus('No markers detected, and no ' + tierLabel + ' API key set to fall back to name reading \u2014 open Settings (\u2699\ufe0f).');
+        showToast(tierLabel + ' API key missing \u2014 open Settings');
+        resumeLiveView(false);
+        return;
+      }
+      setStatus('No markers detected \u2014 falling back to reading printed names…');
+      const base64 = canvasEl.toDataURL('image/jpeg', 0.85).split(',')[1];
+      await runVisionCallWithRateLimitHandling({
+        images: [base64],
+        cropCount: 0,
+        nonEmptyMarkers: [],
+        localCount: localCount,
+        extraWarnings: edgeWarnings
+      });
+      return;
+    }
+
+    // ---- Standard path: at least one non-empty marker needs vision ----
+    if (!currentApiKey()) {
+      const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
+      setStatus((localCount > 0 ? localCount + ' card(s) added locally. ' : '') + 'No ' + tierLabel + ' API key set — open Settings (\u2699\ufe0f) and paste one.');
+      showToast(tierLabel + ' API key missing — open Settings');
+      resumeLiveView(false);
+      return;
+    }
+
+    const crops = [];
+    const cropMarkers = [];
+    nonEmptyMarkers.forEach(marker => {
+      const cropCanvas = cropCardForVision(canvasEl, marker.corners);
+      if (!cropCanvas) return; // degenerate geometry — shouldn't happen for a real detection
+      crops.push(cropCanvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+      cropMarkers.push(marker);
+    });
+
+    const fullPhotoBase64 = canvasEl.toDataURL('image/jpeg', 0.85).split(',')[1];
+    const images = crops.concat([fullPhotoBase64]);
+
+    setStatus('Sending ' + crops.length + ' card region(s) to the vision service…');
+
+    await runVisionCallWithRateLimitHandling({
+      images: images,
+      cropCount: crops.length,
+      nonEmptyMarkers: cropMarkers,
+      localCount: localCount,
+      extraWarnings: edgeWarnings
+    });
+  }
+
+  // Runs the Cards vision call (batched crops + optional full-photo
+  // fallback image, per captureFrame above), and if it fails
+  // specifically with a Free-tier rate limit (429), shows the
+  // Rate-Limit dialog instead of the generic error toast (Blueprint
+  // Section 2). Whichever button the person taps, this same in-flight
+  // capture is what gets resolved — "Wait" just lets the normal throttle
+  // queue retry it, "💲 Turbo" switches tier and immediately retries this
+  // exact capture with the new key/throttle.
+  async function runVisionCallWithRateLimitHandling(captureBundle) {
+    const images = captureBundle.images;
+    const cropCount = captureBundle.cropCount;
+    const nonEmptyMarkers = captureBundle.nonEmptyMarkers || [];
+    const localCount = captureBundle.localCount || 0;
+    const extraWarnings = captureBundle.extraWarnings || [];
+    const includeFallbackPhoto = images.length > cropCount;
+    const prompt = buildCardsVisionPrompt(cropCount, includeFallbackPhoto);
+
+    try {
+      const result = await enqueueVisionCall(() => VisionEngine.analyze(images, { prompt: prompt }));
+      const visionEntries = result.entries || [];
+      const visionWarnings = (result.warnings || []).map(w => (w || '').toString().trim()).filter(w => w);
+
+      const buildResult = buildCardResultsFromMarkers([], nonEmptyMarkers, visionEntries, cropCount);
+      applyCardResultsToTable(buildResult.results);
+
+      const totalCount = localCount + buildResult.results.length;
+      resumeLiveView(true);
+
+      const combinedWarnings = extraWarnings.concat(visionWarnings).concat(buildResult.warnings);
+      if (totalCount === 0) {
+        setStatus(combinedWarnings.length > 0 ? combinedWarnings.join(' ') : 'No card detected in that photo — try again.');
+        showToast('No card detected in that photo — try again');
+        return;
+      }
+      if (combinedWarnings.length > 0) {
+        setStatus(combinedWarnings.join(' '));
+        showToast(totalCount + ' card(s) scanned \u2014 see the status line for a warning');
+      } else {
+        setStatus(totalCount > 1 ? totalCount + ' cards added to the table.' : 'Scan added to the table.');
+      }
+    } catch (err) {
+      if (err && err.isRateLimit && activeTier === 'free') {
+        const choice = await showRateLimitDialog();
+        if (choice === 'turbo') {
+          // Turbo key missing — showRateLimitDialog already prompted and
+          // left the dialog open in that case; only proceed once a key
+          // actually got set.
+          if (!turboApiKey) {
+            resumeLiveView(false);
+            return;
+          }
+          setActiveTier('turbo');
+          showToast('Switched to 💲 Turbo — retrying this scan');
+          setStatus('Retrying with 💲 Turbo…');
+          await runVisionCallWithRateLimitHandling(captureBundle);
+          return;
+        }
+        // "Wait" — let the normal throttle queue retry naturally on the
+        // next Capture tap; don't auto-retry silently in the background.
+        setStatus('Still on Free tier — tap Capture again when ready.');
+        resumeLiveView(false);
+        return;
+      }
+
+      const msg = (err && err.message) || 'Scan not understood — try again.';
+      // Local (zero-vision) cards from this SAME capture already made it
+      // into the table before this call ever started — say so, so a
+      // vision failure doesn't read as "nothing happened" when part of
+      // it actually did.
+      const finalMsg = localCount > 0 ? (localCount + (localCount > 1 ? ' cards' : ' card') + ' added locally. ' + msg) : msg;
+      setStatus(finalMsg);
+      showToast(finalMsg);
+      resumeLiveView(false);
+    }
+  }
+
+  const shutterFlashEl = document.getElementById('shutter-flash');
+
+  // Brief white blink over the captured still, at the moment the shot is
+  // actually taken (Blueprint Section 6: "shutter feedback: brief
+  // preview blink"). Re-triggering the CSS animation on rapid repeat
+  // taps requires forcing a reflow between removing and re-adding the
+  // class, or the browser just no-ops the second animation.
+  function triggerShutterBlink() {
+    if (!shutterFlashEl) return;
+    shutterFlashEl.classList.remove('flash');
+    void shutterFlashEl.offsetWidth; // force reflow so the animation restarts cleanly
+    shutterFlashEl.classList.add('flash');
+  }
+
+  function resumeLiveView(showBanner) {
+    canvasEl.style.display = 'none';
+    if (cameraActive) {
+      videoEl.style.display = 'block';
+    }
+
+    if (showBanner) {
+      bannerEl.style.display = 'block';
+      setTimeout(() => {
+        bannerEl.style.display = 'none';
+        if (cameraActive) {
+          setStatus('Camera ready. Tap Capture for the next scan.');
+        }
+        capturing = false;
+      }, 1500);
+    } else {
+      capturing = false;
+    }
+  }
+
+  function stopCamera() {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(track => track.stop());
+    }
+    mediaStream = null;
+    cameraActive = false;
+    torchOn = false;
+    capturing = false;
+
+    videoEl.srcObject = null;
+    videoEl.style.display = 'none';
+    canvasEl.style.display = 'none';
+    bannerEl.style.display = 'none';
+    placeholderEl.style.display = 'block';
+
+    startCaptureBtn.textContent = 'Start';
+    torchToggleBtn.classList.remove('on');
+    updateCameraStateLayout(); // Blueprint v1.4 Section 8: restore the full review-state grid
+
+    setStatus('Camera stopped. Trial data is kept — tap Start to resume scanning.');
+  }
+
+  // Blueprint v1.7 Section 8: the button bar has exactly two states,
+  // driven off a single body class — camera-scanning collapses the full
+  // grid down to Stop·Capture·Undo (see the CSS overrides), which also
+  // hides #btn-import/#btn-roster (Import and the Roster toggle are
+  // both review-state-only actions). The table's fixed 5-row scan-state
+  // area (Blueprint Section 8a) also depends on cameraActive, so
+  // re-render here too — without this the table would keep showing its
+  // previous row set/ordering until some unrelated action happened to
+  // trigger a render.
+  function updateCameraStateLayout() {
+    document.body.classList.toggle('camera-scanning', cameraActive);
+    renderTable();
+  }
+
+  async function toggleTorch() {
+    if (!cameraActive) {
+      showToast('Start the camera first');
+      return;
+    }
+
+    const track = mediaStream.getVideoTracks()[0];
+    const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+
+    if (!capabilities.torch) {
+      showToast('Flashlight not supported on this device/browser');
+      return;
+    }
+
+    const nextState = !torchOn;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: nextState }] });
+      torchOn = nextState;
+      torchToggleBtn.classList.toggle('on', torchOn);
+      if (torchOn) {
+        showToast('Flashlight on — glare on laminated cards may worsen');
+      }
+    } catch (err) {
+      showToast('Could not toggle the flashlight');
+    }
+  }
+
+  function handleCameraError(err) {
+    let msg;
+    switch (err.name) {
+      case 'NotAllowedError':
+      case 'PermissionDeniedError':
+        msg = 'Camera permission denied. In Chrome, tap the lock icon next to the address bar → Permissions → allow Camera, then reload this page.';
+        break;
+      case 'NotFoundError':
+      case 'DevicesNotFoundError':
+        msg = 'No camera found on this device.';
+        break;
+      case 'NotReadableError':
+      case 'TrackStartError':
+        msg = 'The camera is already in use by another app. Close other camera apps and try again.';
+        break;
+      default:
+        msg = 'Camera error: ' + (err.message || err.name || 'unknown error') + '. Try reloading the page.';
+    }
+    setStatus(msg);
+    showToast('Camera error — see status message above');
+  }
+
+  // ---- Settings screen open/close ----
+  function openSettings() {
+    document.getElementById('settings-screen').style.display = 'block';
+  }
+
+  function closeSettings() {
+    document.getElementById('settings-screen').style.display = 'none';
+  }
+
+  // ---- Init ----
+  // (Blueprint v1.4 Section 8: the mode selector is now permanently the
+  // compact dropdown — the old viewport-based toggle between a 3-button
+  // row and a dropdown, and its resize/orientationchange listeners, are
+  // gone; there's nothing left to switch.)
+  loadSavedApiKey();
+  renderRosterToggleUI(); // Blueprint v1.7 Section 7: Roster button starts labeled "Roster: OFF"
+  ArucoEngine.init(); // Blueprint v1.7 Section 3.1 — failure here doesn't crash the app; captureFrame() checks .ready and reports it clearly when Capture is actually tapped
+  updateCameraStateLayout();
+
+  // ---------------------------------------------------------------
+  // SESSION ISOLATION (Blueprint Section 4)
+  // A genuine page reload already starts clean — tableData/undoSnapshot
+  // are freshly initialized above. The actual leak: mobile Chrome (and
+  // PWAs generally) often don't do a real reload when a tab/app is
+  // "closed" and reopened — they restore the page from the back/forward
+  // cache (bfcache), resuming the exact same in-memory JS state instead
+  // of re-running this script. That's how a previous session's table
+  // data can survive what looks, to the teacher, like closing the app.
+  // The 'pageshow' event's persisted flag is the standard signal that a
+  // bfcache restore (not a fresh load) just happened — so this is a
+  // detectable, fixable trigger, not a guess.
+  window.addEventListener('pageshow', function (event) {
+    if (event.persisted) {
+      tableData = {};
+      pollData = {};
+      undoSnapshot = null;
+      roster = {}; // Section 7: roster persists "until... tab close"
+      activeRosterClassTitle = '';
+      rosterOn = false; // Section 7: toggle defaults OFF at every app launch, same as Anonymous used to
+      sortState = null; // table v2 view-state shouldn't bleed into a "new" session either
+      headerLabels = {};
+      sessionActionCounter = 0;
+      setActiveTier('free'); // Section 2: Free is the default at EVERY app launch, and a bfcache restore is a new session by this same logic
+      renderRosterToggleUI();
+      renderPollPanel();
+      if (cameraActive) {
+        stopCamera(); // also calls updateCameraStateLayout() internally
+      } else {
+        updateCameraStateLayout();
+      }
+      setStatus('Ready. Tap Start to open the camera. (New session — previous scans cleared.)');
+    }
+  });
+</script>
+
+</body>
+</html>
