@@ -1702,32 +1702,62 @@
   // on the printed card. Implemented here exactly as 10a specifies and
   // as toolkit.html actually prints, since reading for bubbles that
   // aren't physically on the card would be meaningless.
+  // ---------------------------------------------------------------
+  // BUG FIX (bubbles read as empty — diagnosed, root cause confirmed):
+  // js-aruco2's generateSVG() bakes a 1-unit-out-of-8 WHITE QUIET ZONE
+  // into the marker artwork on all four sides before the actual
+  // black-bordered marker begins (viewBox "0 0 8 8"; the black square
+  // that AR.Detector actually locks onto spans only [1,7] of that,
+  // i.e. the inner 6/8 = 75%). toolkit.html sizes the marker's
+  // CONTAINER div to exactly 7cm and lets the SVG fill it — so the
+  // REAL detected marker (what corners[0..3] describes) is a 5.25cm
+  // square, INSET by 0.875cm on each side from that 7cm container.
+  // The original CARD_LAYOUT_BACK below was computed against the 7cm
+  // CONTAINER's own box (origin = container's top-left, scale = 7cm)
+  // as if that WERE the detected marker — it wasn't. Every u,v was
+  // therefore both offset (wrong origin) and mis-scaled (wrong unit),
+  // which compounds with distance from the marker: rows furthest away
+  // (the Number block) were the worst hit, landing samples on blank
+  // paper — exactly the reported "reads as completely empty" symptom.
+  // Fixed by re-deriving u,v against the DETECTOR's real origin/scale:
+  //   inset = containerSize / 8
+  //   realMarkerSize = containerSize * 6 / 8
+  //   detectorOriginX/Y = containerLeft/Top + inset
+  // Re-verified against toolkit.html's actual current bubble-placement
+  // code (addConditionBlock/addYesNoNaRow/addNumberRow) line by line
+  // before recomputing — this was the ONLY error found; the axis
+  // convention, corner order, and center-offset math were all already
+  // correct.
+  // ---------------------------------------------------------------
   const CARD_LAYOUT_BACK = {
-    conditionA: { label: 'A', u: 3.1569, v: 0.2721 },
-    conditionB: { label: 'B', u: 3.1569, v: 0.5806 },
+    conditionA: { label: 'A', u: 4.0425, v: 0.1962 },
+    conditionB: { label: 'B', u: 4.0425, v: 0.6074 },
     yesNoNa: [
-      { label: 'Yes', u: 1.3629, v: 0.9616 },
-      { label: 'No',  u: 1.9434, v: 0.9616 },
-      { label: 'N/A', u: 2.5240, v: 0.9616 }
+      { label: 'Yes', u: 1.6505, v: 1.1154 },
+      { label: 'No',  u: 2.4246, v: 1.1154 },
+      { label: 'N/A', u: 3.1987, v: 1.1154 }
     ],
     numberBlock: [
-      { label: '0', u: 0.0726, v: 1.4173 }, { label: '1', u: 0.5806, v: 1.4173 },
-      { label: '2', u: 1.0886, v: 1.4173 }, { label: '3', u: 1.5966, v: 1.4173 },
-      { label: '4', u: 2.1046, v: 1.4173 },
-      { label: '5', u: 0.0726, v: 2.0523 }, { label: '6', u: 0.5806, v: 2.0523 },
-      { label: '7', u: 1.0886, v: 2.0523 }, { label: '8', u: 1.5966, v: 2.0523 },
-      { label: '9', u: 2.1046, v: 2.0523 },
-      { label: '10', u: 0.0726, v: 2.6873 }, { label: '11', u: 0.5806, v: 2.6873 },
-      { label: '12', u: 1.0886, v: 2.6873 }, { label: 'More', u: 1.5966, v: 2.6873 }
+      { label: '0', u: -0.0699, v: 1.7230 }, { label: '1', u: 0.6074, v: 1.7230 },
+      { label: '2', u: 1.2848, v: 1.7230 }, { label: '3', u: 1.9621, v: 1.7230 },
+      { label: '4', u: 2.6394, v: 1.7230 },
+      { label: '5', u: -0.0699, v: 2.5697 }, { label: '6', u: 0.6074, v: 2.5697 },
+      { label: '7', u: 1.2848, v: 2.5697 }, { label: '8', u: 1.9621, v: 2.5697 },
+      { label: '9', u: 2.6394, v: 2.5697 },
+      { label: '10', u: -0.0699, v: 3.4164 }, { label: '11', u: 0.6074, v: 3.4164 },
+      { label: '12', u: 1.2848, v: 3.4164 }, { label: 'More', u: 1.9621, v: 3.4164 }
     ]
   };
 
   // Sample region half-width around each bubble CENTER, in u-units.
-  // Bubbles print at 0.4in diameter (0.4/M ~= 0.145 u-units); this
-  // samples a small square well inside that circle (~28% of the
-  // diameter each side) so the printed template-color border stroke
+  // Bubbles print at 0.4in diameter; this samples a small square well
+  // inside that circle so the printed template-color border stroke
   // itself is never counted as a "mark" — only genuine interior ink.
-  const BUBBLE_SAMPLE_HALF_U = 0.028;
+  // Rescaled alongside the CARD_LAYOUT_BACK fix above: u-units are now
+  // relative to the TRUE detected marker size (5.25cm, not the 7cm
+  // container), so this value had to shrink proportionally (0.028 ->
+  // 0.0373) to keep sampling the SAME absolute physical square.
+  const BUBBLE_SAMPLE_HALF_U = 0.0373;
 
   // A bubble sample this small/clipped can't be trusted either way —
   // same "never guess-attach" principle as MIN_REGION_PIXELS above,
@@ -1865,6 +1895,48 @@
     };
   }
 
+  // TEMPORARY (Step 4 bug report #2 — "bubbles not read"): visual debug
+  // overlay showing exactly where the code samples each bubble and what
+  // fill-fraction it measured there, drawn directly onto the captured
+  // photo. Lets you see at a glance whether the geometry is right
+  // (circles sit on the printed bubbles) or wrong (circles land
+  // elsewhere — e.g. rotated 90/180/270 degrees from the real bubbles,
+  // which would point at a marker-generation-vs-detection orientation
+  // mismatch rather than a threshold problem). Flip to false (or
+  // delete this block and its one call site in captureFrame) once
+  // back-face reads are confirmed correct.
+  const DEBUG_BACK_FACE_OMR = true;
+
+  function debugDrawBubbleRegions(canvas, corners) {
+    const ctx = canvas.getContext('2d');
+    const allBubbles = [CARD_LAYOUT_BACK.conditionA, CARD_LAYOUT_BACK.conditionB]
+      .concat(CARD_LAYOUT_BACK.yesNoNa)
+      .concat(CARD_LAYOUT_BACK.numberBlock);
+
+    allBubbles.forEach(b => {
+      const pt = mapMarkerLocalToImage(corners, b.u, b.v);
+      const sample = sampleBubbleFillFraction(canvas, corners, b.u, b.v);
+      const color = !sample.reliable ? 'orange'
+        : sample.fillFraction >= BUBBLE_FILLED_MIN ? 'red'
+        : sample.fillFraction >= BUBBLE_EMPTY_MAX ? 'yellow'
+        : 'lime';
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 12, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.font = 'bold 13px monospace';
+      ctx.fillStyle = color;
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = 3;
+      const label = b.label + ':' + (sample.reliable ? sample.fillFraction.toFixed(2) : 'N/A');
+      ctx.strokeText(label, pt.x + 15, pt.y + 4);
+      ctx.fillText(label, pt.x + 15, pt.y + 4);
+      ctx.restore();
+    });
+  }
+
   const ArucoEngine = {
     detector: null,
     ready: false,
@@ -1969,6 +2041,19 @@
   // in, so Capture doesn't send a blurry photo to vision just because
   // the QR happened to read early.
   const QR_FRAMES_TO_KEEP_SAMPLING_AFTER_DECODE = 3;
+  // BUG FIX (Cards capture always ran the full ~10-frame/2.25s burst,
+  // even with the marker clearly visible): burstScanQR's early-stop was
+  // keyed ONLY to a successful jsQR decode. A Cards capture (front or
+  // back) essentially never has a QR code in frame, so that condition
+  // never fired, and the loop always ran to QR_BURST_MAX_ATTEMPTS
+  // regardless of how quickly the marker itself was found. Root cause
+  // confirmed by reading burstScanQR's loop directly: `decodedAndSettled
+  // = qrText && framesLeftAfterDecode <= 0` has no ArUco-related term at
+  // all. Fixed by adding a parallel ArUco-detection early-stop trigger,
+  // opt-in via opts.detectAruco, using the SAME "keep sampling a few
+  // more frames after the first hit" settle pattern already used for QR
+  // (a marker can also be found before autofocus has fully settled).
+  const ARUCO_FRAMES_TO_KEEP_SAMPLING_AFTER_DETECT = 3;
 
   // Cheap relative sharpness estimate for picking the best frame out of
   // one burst. Downsamples to a small grayscale copy, then scores focus
@@ -2102,6 +2187,7 @@
    * @param {Object} [opts]
    * @param {function(number, number):void} [opts.onRetry] - called as (nextAttemptNumber1Indexed, maxAttempts) right before waiting to sample the next frame, so callers can update a "try N of M" status line the way Load List already does
    * @param {boolean} [opts.multi] - if true, ALSO runs decodeAllQRsInImageData() once on the final chosen bestCanvas and returns every QR found (with left-to-right centerX) as qrResults. Kept as a single pass on the one sharpest frame — not per sampled frame — so multi-card capture doesn't multiply jsQR's cost by the whole burst window; the existing single-QR early-stop below already ensures that frame is in reasonably good focus.
+   * @param {boolean} [opts.detectAruco] - if true, ALSO runs ArucoEngine.detect() on each sampled frame and treats finding at least one marker as an additional early-stop trigger (same settle-then-stop shape as the QR decode trigger). BUG FIX: Cards captures (front or back) essentially never have a QR in frame, so without this the burst always ran the full QR_BURST_MAX_ATTEMPTS regardless of how quickly the marker was visible. Callers that only care about QR (Load List, Link) should leave this off.
    * @returns {Promise<{qrText: string|null, qrResults: Array|undefined, bestCanvas: HTMLCanvasElement|null, attempts: number, cameraNotReady: boolean}>}
    */
   // DEFECT FIX (v1.7 Step 1): startCamera() resolves as soon as
@@ -2151,6 +2237,26 @@
     let bestCanvas = null;
     let attemptsUsed = 0;
     let framesLeftAfterDecode = -1; // -1 = "no decode yet"; counts down once qrText is set
+    let arucoFound = false;
+    let framesLeftAfterAruco = -1; // same pattern as framesLeftAfterDecode, for opts.detectAruco callers
+
+    // BUG FIX (Step 4 bug report #1 — "runs the full burst even though
+    // an early-stop exists"): the early-stop DOES fire (verified by
+    // trace: ~4 of 10 attempts once a marker is found), but full
+    // ArucoEngine.detect() is a real CV pass (threshold + contour +
+    // decode) run at FULL camera resolution on every attempt until
+    // found — much heavier per-frame than the cheap jsQR check this
+    // loop's timing was originally tuned around. Fewer attempts at a
+    // much higher per-attempt cost can net out to little or no
+    // perceived speedup. Fix: run the TRIGGER-only check (this loop
+    // just needs "is a marker roughly visible", not a precise read)
+    // against a small downscaled copy instead — the FINAL/authoritative
+    // detection still runs at full resolution afterward, on the frozen
+    // bestCanvas, in captureFrame(), completely unaffected by this.
+    const arucoScratch = (opts.detectAruco && ArucoEngine.ready) ? document.createElement('canvas') : null;
+    const ARUCO_TRIGGER_MAX_DIMENSION = 480;
+
+    const burstStartedAt = Date.now();
 
     for (let attempt = 0; attempt < QR_BURST_MAX_ATTEMPTS; attempt++) {
       attemptsUsed = attempt + 1;
@@ -2208,12 +2314,45 @@
           } else if (qrText && framesLeftAfterDecode > 0) {
             framesLeftAfterDecode--;
           }
+
+          // Cards capture opt-in (see ARUCO_FRAMES_TO_KEEP_SAMPLING_AFTER_DETECT
+          // comment above): same early-stop shape as QR, just keyed to
+          // ArucoEngine finding at least one marker instead of a QR
+          // decode. Runs the TRIGGER check on a downscaled copy (see
+          // arucoScratch above) — this only needs to know a marker is
+          // roughly visible, not read it precisely.
+          if (opts.detectAruco && ArucoEngine.ready) {
+            if (!arucoFound) {
+              const scale = Math.min(1, ARUCO_TRIGGER_MAX_DIMENSION / Math.max(w, h));
+              const sw = Math.max(1, Math.round(w * scale));
+              const sh = Math.max(1, Math.round(h * scale));
+              arucoScratch.width = sw;
+              arucoScratch.height = sh;
+              arucoScratch.getContext('2d').drawImage(workCanvas, 0, 0, sw, sh);
+              const markers = ArucoEngine.detect(arucoScratch);
+              if (typeof console !== 'undefined' && console.debug) {
+                console.debug('[burst debug] attempt ' + attemptsUsed + '/' + QR_BURST_MAX_ATTEMPTS +
+                  ' @' + (Date.now() - burstStartedAt) + 'ms — arucoFound(this frame)=' + (markers.length > 0) +
+                  ', trigger canvas ' + sw + 'x' + sh);
+              }
+              if (markers.length > 0) {
+                arucoFound = true;
+                framesLeftAfterAruco = ARUCO_FRAMES_TO_KEEP_SAMPLING_AFTER_DETECT;
+              }
+            } else if (framesLeftAfterAruco > 0) {
+              framesLeftAfterAruco--;
+            }
+          }
         }
       }
 
       const decodedAndSettled = qrText && framesLeftAfterDecode <= 0;
-      if (decodedAndSettled) {
-        break; // stop sampling — we have a decode AND gave focus a few extra frames to settle
+      const arucoDetectedAndSettled = arucoFound && framesLeftAfterAruco <= 0;
+      if (decodedAndSettled || arucoDetectedAndSettled) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[burst debug] breaking early at attempt ' + attemptsUsed + ' after ' + (Date.now() - burstStartedAt) + 'ms');
+        }
+        break; // stop sampling — either signal found AND settled a few extra frames
       }
 
       if (attempt < QR_BURST_MAX_ATTEMPTS - 1) {
@@ -4211,8 +4350,13 @@
     // which sampled frame was sharpest. multi:true still runs a QR pass
     // on that same frame too, purely to catch a stray roster QR
     // photographed by mistake with Capture instead of the Roster button.
+    // detectAruco:true is the Bug 1 fix — Cards captures almost never
+    // have a QR in frame, so without this the burst always ran the
+    // full ~2.25s window regardless of how quickly the marker was
+    // visible; now it also stops as soon as a marker is found+settled.
     const burstResult = await burstScanQR(videoEl, canvasEl, {
       multi: true,
+      detectAruco: true,
       onRetry: function (nextAttempt, maxAttempts) {
         setStatus('Reading card markers… (try ' + nextAttempt + ' of ' + maxAttempts + ')');
       }
@@ -4280,10 +4424,31 @@
         showToast('No markers detected');
         return;
       }
+
+      if (DEBUG_BACK_FACE_OMR) {
+        markers.forEach(marker => debugDrawBubbleRegions(canvasEl, marker.corners));
+      }
+
       const backBuild = buildBackFaceResultsFromMarkers(canvasEl, markers);
       applyCardResultsToTable(backBuild.results);
-      resumeLiveView(true);
       const count = backBuild.results.length;
+
+      if (DEBUG_BACK_FACE_OMR) {
+        // Keep the annotated freeze-frame on screen (don't auto-resume
+        // live view) so you can actually study where each circle landed
+        // against the real printed bubbles. Tap Capture again for a new
+        // photo whenever you're ready — capturing is reset manually
+        // here since resumeLiveView() (which normally does that) is
+        // intentionally skipped in this debug branch.
+        capturing = false;
+        const debugMsg = count + ' card(s) read (local). Debug overlay: circle color = green(empty)/yellow(ambiguous)/red(filled)/orange(unreliable sample), label = fill fraction. ' +
+          (backBuild.warnings.length > 0 ? backBuild.warnings.join(' ') : '');
+        setStatus(debugMsg);
+        showToast('Debug overlay drawn — see status line for the color key');
+        return;
+      }
+
+      resumeLiveView(true);
       if (count === 0) {
         setStatus(backBuild.warnings.length > 0 ? backBuild.warnings.join(' ') : 'No card could be read from that photo — try again.');
         showToast('No card could be read — try again');
