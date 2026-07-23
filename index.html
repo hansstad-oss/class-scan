@@ -1029,6 +1029,7 @@
         <option value="cards">Cards</option>
         <option value="quiz">Quiz</option>
         <option value="participation">Participation</option>
+        <option value="poll">Poll</option>
       </select>
 
       <div id="trial-title">No trial linked — data stays local</div>
@@ -1092,7 +1093,7 @@
 
   </div>
 
-  <!-- ============ RESULTS TABLE ============ -->
+  <!-- ============ RESULTS TABLE (Cards/Quiz/Participation) ============ -->
   <div id="table-wrap">
     <table id="results-table">
       <thead>
@@ -1107,6 +1108,22 @@
       </tbody>
     </table>
     <div id="empty-state">No data yet. Load a roster or start scanning to see results here.</div>
+  </div>
+
+  <!-- ============ POLL PANEL (Blueprint 3.4 — Master Workflow 5 Step 11) ============
+       Independent of the Cards results table above — Poll has its own
+       data store (pollData) and its own render function
+       (renderPollPanel), toggled by mode in selectMode(). No response/
+       condition columns, per spec: "live tally... no response/condition
+       columns." -->
+  <div id="poll-panel" style="display:none;">
+    <div id="poll-tally">
+      <!-- 4 rows (A/B/C/D), built by renderPollPanel() -->
+    </div>
+    <div id="poll-student-list">
+      <!-- per-student answers, shown only when Roster is ON -->
+    </div>
+    <div id="poll-empty-state">No poll answers yet. Point the camera at the class and tap Capture.</div>
   </div>
 
 </div>
@@ -1304,6 +1321,8 @@
       dropdown.value = mode;
     }
 
+    currentMode = mode;
+
     // Average/Tally/Chart availability varies by mode (visual placeholder only — no logic yet)
     const avgBtn = document.getElementById('btn-average');
     const tallyBtn = document.getElementById('btn-tally');
@@ -1317,10 +1336,32 @@
       avgBtn.classList.add('disabled-btn');
       tallyBtn.classList.remove('disabled-btn');
       chartBtn.classList.remove('disabled-btn');
+    } else if (mode === 'poll') {
+      // Blueprint 3.4: "No response/condition columns" and no numeric
+      // data — Average doesn't apply. Tally/Chart are Poll's primary
+      // output, so both stay enabled.
+      avgBtn.classList.add('disabled-btn');
+      tallyBtn.classList.remove('disabled-btn');
+      chartBtn.classList.remove('disabled-btn');
     } else {
       avgBtn.classList.remove('disabled-btn');
       tallyBtn.classList.remove('disabled-btn');
       chartBtn.classList.remove('disabled-btn');
+    }
+
+    // Poll gets its own panel (live tally + per-student list) instead
+    // of the Cards results table — see poll-panel markup and
+    // renderPollPanel(). Cards/Quiz/Participation continue sharing the
+    // one results table exactly as before this step.
+    const tableWrapEl = document.getElementById('table-wrap');
+    const pollPanelEl = document.getElementById('poll-panel');
+    if (mode === 'poll') {
+      if (tableWrapEl) tableWrapEl.style.display = 'none';
+      if (pollPanelEl) pollPanelEl.style.display = 'block';
+      renderPollPanel();
+    } else {
+      if (tableWrapEl) tableWrapEl.style.display = '';
+      if (pollPanelEl) pollPanelEl.style.display = 'none';
     }
 
     showToast('Mode switching logic (table clear/confirm) — coming soon');
@@ -1968,6 +2009,62 @@
       }
     }
   };
+
+  // ---------------------------------------------------------------
+  // POLL MODE — rotation -> answer mapping (Blueprint v1.8 Section
+  // 3.4, Master Workflow 5 Step 11). Fully local: the FRONT marker's
+  // ID gives identity, its ROTATION gives the answer. No vision call.
+  //
+  // corners[0] is the marker's own canonical top-left AS DESIGNED
+  // (same guarantee CARD_LAYOUT/CARD_LAYOUT_BACK already rely on —
+  // see the verification note above ArucoEngine). The vector
+  // corners[0]->corners[1] is that marker's own top edge; its angle in
+  // the photographed image (standard atan2(dy,dx), image y-down) tells
+  // us how far the card has been physically rotated CLOCKWISE from
+  // that canonical orientation:
+  //   ~0deg   -> bucket 0 (canonical / unrotated)
+  //   ~90deg  -> bucket 1 (rotated 90 deg clockwise)
+  //   ~180deg -> bucket 2 (rotated 180 deg)
+  //   ~270deg -> bucket 3 (rotated 270 deg clockwise / 90 deg CCW)
+  //
+  // FRONT/BACK CORRESPONDENCE (Blueprint: "specified at build time and
+  // verified with printed cards"): toolkit.html's poll BACK assigns
+  // A/B/C/D clockwise (top/right/bottom/left) to whichever edge the
+  // STUDENT holds up. The physical front/back relationship on the cut
+  // card (front keeps the sheet's left 8.5x8.5 square, back keeps the
+  // right 8.5x8.5 square from the same landscape sheet, matching this
+  // project's established "short edge" duplex convention for landscape
+  // Cards) is assumed here to make bucket 0 = 'A', increasing clockwise
+  // through B/C/D as the card is physically rotated clockwise. This is
+  // a BEST-EFFORT build-time assumption, not a verified fact.
+  //
+  // ADJUST HERE if printed-card testing shows it's wrong (see test
+  // plan step 3) — every possible mismatch (mirrored, or simply
+  // rotated by one letter) is reachable by changing ONLY these two
+  // constants, nothing else in this file:
+  //   POLL_MAPPING_OFFSET:    0-3, which bucket reads as 'A'
+  //   POLL_MAPPING_DIRECTION: 1 = clockwise rotation reads A->B->C->D;
+  //                           -1 = reversed (use this if it comes out
+  //                           mirrored, e.g. clockwise rotation reads
+  //                           A->D->C->B instead)
+  // ---------------------------------------------------------------
+  const POLL_MAPPING_OFFSET = 0;
+  const POLL_MAPPING_DIRECTION = 1;
+  const POLL_LETTERS = ['A', 'B', 'C', 'D'];
+
+  function computeMarkerRotationBucket(corners) {
+    const dx = corners[1].x - corners[0].x;
+    const dy = corners[1].y - corners[0].y;
+    let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI); // (-180, 180]
+    if (angleDeg < 0) angleDeg += 360; // normalize to [0, 360)
+    // Round to the nearest 90 deg, wrapping 360 back to 0.
+    return Math.round(angleDeg / 90) % 4;
+  }
+
+  function pollBucketToLetter(bucket) {
+    const idx = ((bucket * POLL_MAPPING_DIRECTION + POLL_MAPPING_OFFSET) % 4 + 4) % 4;
+    return POLL_LETTERS[idx];
+  }
 
 
   // All modes funnel vision calls through this so no two calls ever
@@ -2685,6 +2782,19 @@
   let roster = {}; // key: same ID string as above -> { displayName, id }
   let activeRosterClassTitle = ''; // from the unified ROSTER|ClassTitle|... QR payload (Blueprint Section 7)
 
+  // Mode selector state (Master Workflow 5 Step 11). Previously nothing
+  // read the dropdown's value at all — captureFrame() unconditionally
+  // ran Cards logic regardless of selection. Poll mode is the first to
+  // actually need real branching here; Quiz/Participation still have no
+  // data model (unchanged, out of this step's scope).
+  let currentMode = 'cards';
+
+  // Poll mode's own independent data store — deliberately NOT sharing
+  // tableData/renderTable()/applyCardResultsToTable() with Cards (whose
+  // back-face OMR code has known open bugs this step must not touch).
+  // key: ArUco marker ID (string) -> { answer: 'A'|'B'|'C'|'D', acqOrder, updatedAt }
+  let pollData = {};
+
   // ---- Roster ON/OFF toggle (Blueprint v1.7 Section 7 — replaces the
   // old Load List + Clear List + Anonymous trio). Default OFF: names
   // hidden, table/exports show a numeric ID or "Guest N" instead. ----
@@ -3301,6 +3411,7 @@
       rosterOn = false;
       renderRosterToggleUI();
       renderTable();
+      renderPollPanel(); // no-op if not currently in Poll mode (guarded internally)
       showToast('Roster OFF — names hidden');
       setStatus('Roster OFF. Table and exports now show IDs, not names.');
       return;
@@ -3313,6 +3424,7 @@
       rosterOn = true;
       renderRosterToggleUI();
       renderTable();
+      renderPollPanel();
       showToast('Roster ON — names shown');
       setStatus('Roster ON. Names are now visible and will export.');
       return;
@@ -3433,12 +3545,14 @@
   function handleResetResponsesOnly() {
     hideResetDialog();
     tableData = {};
+    pollData = {};
     undoSnapshot = null;
     sortState = null; // table v2: back to default newest-first/roster-block layout
     headerLabels = {}; // table v2: renamed headers restore to defaults (Blueprint Section 8a)
     sessionActionCounter = 0; // "#" is cleared with the table (Blueprint Section 8a)
     closeResultsModal(); // avoid showing a stale Average/Tally/Chart view after Reset
     renderTable();
+    renderPollPanel();
     showToast('Table reset');
     setStatus('Table reset. Roster and API key settings kept.');
   }
@@ -3446,6 +3560,7 @@
   function handleResetResponsesAndRoster() {
     hideResetDialog();
     tableData = {};
+    pollData = {};
     undoSnapshot = null;
     sortState = null;
     headerLabels = {};
@@ -3454,6 +3569,7 @@
     clearRosterState();
     renderRosterToggleUI();
     renderTable();
+    renderPollPanel();
     showToast('Table and roster reset');
     setStatus('Table reset and roster cleared. Roster is now OFF.');
   }
@@ -3786,6 +3902,69 @@
     return getOrderedRows();
   }
 
+  // ---------------------------------------------------------------
+  // POLL MODE — display/render (Master Workflow 5 Step 11). Rows are
+  // shaped with a `.response` field on purpose so the EXISTING
+  // computeTally()/buildTallySection()/buildChartSection() (built for
+  // Cards) work completely unmodified for Poll's tally and chart too —
+  // no changes needed to any of those three functions.
+  // ---------------------------------------------------------------
+  function getPollDisplayRows() {
+    return Object.keys(pollData).map(id => {
+      const entry = pollData[id];
+      const rosterEntry = roster[id];
+      const displayName = rosterOn
+        ? (rosterEntry ? rosterEntry.displayName : ('Guest ' + id))
+        : id;
+      return {
+        key: id,
+        displayName: displayName,
+        response: entry.answer,
+        hasData: true,
+        acqOrder: entry.acqOrder
+      };
+    }).sort((a, b) => (b.acqOrder || 0) - (a.acqOrder || 0)); // newest first, matching Cards' default
+  }
+
+  // Live tally strip (always visible while in Poll mode) + per-student
+  // list (only when Roster is ON, per Blueprint 3.4's own parenthetical:
+  // "Copy/Link of the tally (and per-student answers when Roster ON)").
+  function renderPollPanel() {
+    const tallyEl = document.getElementById('poll-tally');
+    const listEl = document.getElementById('poll-student-list');
+    const emptyEl = document.getElementById('poll-empty-state');
+    if (!tallyEl || !listEl || !emptyEl) return; // not in poll mode's DOM yet / guarded call
+
+    const rows = getPollDisplayRows();
+
+    if (rows.length === 0) {
+      tallyEl.innerHTML = '';
+      listEl.innerHTML = '';
+      emptyEl.style.display = 'block';
+      return;
+    }
+    emptyEl.style.display = 'none';
+
+    const tally = computeTally(rows);
+    tallyEl.innerHTML = '';
+    POLL_LETTERS.forEach(letter => {
+      const item = tally.items.find(i => i.value === letter);
+      const count = item ? item.count : 0;
+      const pct = item ? item.pct : 0;
+      tallyEl.appendChild(buildStatLine(letter, count + ' (' + pct.toFixed(0) + '%)'));
+    });
+
+    listEl.innerHTML = '';
+    if (rosterOn) {
+      const heading = document.createElement('h4');
+      heading.textContent = 'Per-Student Answers';
+      listEl.appendChild(heading);
+      rows.forEach(row => {
+        listEl.appendChild(buildStatLine(row.displayName, row.response));
+      });
+    }
+  }
+
   // Per Blueprint Section 8: "if the table contains >=1 uncorrected
   // low-confidence cell at export time" — checks Name, Response, and
   // Condition flags across all rows currently in tableData (roster
@@ -3840,8 +4019,36 @@
     });
   }
 
+  // ---- Poll's own Copy — tally always, per-student answers only ----
+  // ---- when Roster is ON (Blueprint 3.4's own parenthetical).    ----
+  function handlePollCopy() {
+    const rows = getPollDisplayRows();
+    if (rows.length === 0) {
+      showToast('No poll answers yet');
+      return;
+    }
+    const tally = computeTally(rows);
+    const lines = [['Answer', 'Count', 'Percent'].map(tsvEscapeCell).join('\t')];
+    tally.items.forEach(item => {
+      lines.push([item.value, String(item.count), item.pct.toFixed(1) + '%'].map(tsvEscapeCell).join('\t'));
+    });
+    if (rosterOn) {
+      lines.push('');
+      lines.push(['#', 'Name', 'Answer'].map(tsvEscapeCell).join('\t'));
+      rows.forEach(row => {
+        lines.push([String(row.acqOrder || ''), row.displayName, row.response].map(tsvEscapeCell).join('\t'));
+      });
+    }
+    copyTextToClipboard(lines.join('\n')).then(() => {
+      showToast('Poll results copied');
+    }).catch(() => {
+      showToast('Could not copy — clipboard access blocked by the browser');
+    });
+  }
+
   // ---- Copy (Blueprint Section 8) ----
   function handleCopy() {
+    if (currentMode === 'poll') { handlePollCopy(); return; }
     const rows = getSortedDisplayRows();
 
     if (rows.length === 0) {
@@ -4113,7 +4320,21 @@
     return section;
   }
 
+  // ---- Poll's own Tally (reuses buildTallySection unmodified — Poll ----
+  // ---- rows are shaped with a `.response` field just for this).    ----
+  function handlePollTally() {
+    const rows = getPollDisplayRows();
+    if (rows.length === 0) {
+      showToast('No poll answers yet');
+      return;
+    }
+    const container = document.createElement('div');
+    container.appendChild(buildTallySection('Poll Results', rows));
+    openResultsModal('Tally', container);
+  }
+
   function handleTally() {
+    if (currentMode === 'poll') { handlePollTally(); return; }
     const rows = getSortedDisplayRows().filter(r => r.hasData);
 
     if (rows.length === 0) {
@@ -4174,7 +4395,51 @@
     return section;
   }
 
+  // ---- Poll's own Chart (reuses buildChartSection unmodified). ----
+  function handlePollChart() {
+    if (typeof Chart !== 'function') {
+      showToast('Chart library failed to load — check your internet connection and reload the page');
+      return;
+    }
+    const rows = getPollDisplayRows();
+    if (rows.length === 0) {
+      showToast('No poll answers yet');
+      return;
+    }
+    const canvasId = 'chart-canvas-poll';
+    const container = document.createElement('div');
+    container.appendChild(buildChartSection('Poll Results', rows, canvasId));
+    openResultsModal('Chart', container);
+
+    activeCharts.forEach(c => { try { c.destroy(); } catch (e) {} });
+    activeCharts = [];
+
+    const canvasEl2 = document.getElementById(canvasId);
+    if (!canvasEl2) return;
+    const tally = computeTally(rows);
+    if (tally.items.length === 0) return;
+    const chart = new Chart(canvasEl2, {
+      type: 'bar',
+      data: {
+        labels: tally.items.map(i => i.value),
+        datasets: [{
+          label: '% of answers',
+          data: tally.items.map(i => Math.round(i.pct * 10) / 10),
+          backgroundColor: '#1a73e8'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } }
+      }
+    });
+    activeCharts.push(chart);
+  }
+
   function handleChart() {
+    if (currentMode === 'poll') { handlePollChart(); return; }
     if (typeof Chart !== 'function') {
       showToast('Chart library failed to load — check your internet connection and reload the page');
       return;
@@ -4410,6 +4675,39 @@
 
     const markers = ArucoEngine.detect(canvasEl);
 
+    // ---- Poll branch (Master Workflow 5 Step 11): fully local, no  ----
+    // ---- vision call, ever. Reads EVERY detected marker's ID       ----
+    // ---- (identity) AND rotation (answer) from one photo.          ----
+    if (currentMode === 'poll') {
+      if (markers.length === 0) {
+        resumeLiveView(false);
+        setStatus('No markers detected on this photo — reposition and rescan (Poll mode never calls vision).');
+        showToast('No markers detected');
+        return;
+      }
+      markers.forEach(marker => {
+        const bucket = computeMarkerRotationBucket(marker.corners);
+        const letter = pollBucketToLetter(bucket);
+        const key = String(marker.id);
+        const existing = pollData[key];
+        // Repeated capture of the same ID overwrites (Blueprint 3.4:
+        // "latest answer wins") — acqOrder carries forward from the
+        // first time this card was seen, matching Cards' own rescan
+        // convention (Section 8a); updatedAt always advances.
+        const acqOrder = existing ? existing.acqOrder : nextActionTick();
+        pollData[key] = {
+          answer: letter,
+          acqOrder: acqOrder,
+          updatedAt: nextActionTick()
+        };
+      });
+      renderPollPanel();
+      resumeLiveView(true);
+      const count = markers.length;
+      setStatus(count > 1 ? count + ' card(s) read (local — no vision call).' : '1 card read (local — no vision call).');
+      return;
+    }
+
     // ---- Back-face branch (Master Workflow 5 Step 4): fully local, ----
     // ---- no vision call, ever, on this path.                     ----
     if (cardFaceMode === 'back') {
@@ -4502,313 +4800,4 @@
       resumeLiveView(true);
       if (edgeWarnings.length > 0) {
         setStatus(edgeWarnings.join(' '));
-        showToast(localCount + ' card(s) scanned \u2014 see the status line for a warning');
-      } else {
-        setStatus(localCount > 1 ? localCount + ' cards added to the table (local \u2014 no responses to read).' : 'Scan added to the table (local \u2014 no response to read).');
-      }
-      return;
-    }
-
-    // ---- Nothing detected locally at all: whole-photo OCR fallback ----
-    if (markers.length === 0) {
-      if (!currentApiKey()) {
-        const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
-        setStatus('No markers detected, and no ' + tierLabel + ' API key set to fall back to name reading \u2014 open Settings (\u2699\ufe0f).');
-        showToast(tierLabel + ' API key missing \u2014 open Settings');
-        resumeLiveView(false);
-        return;
-      }
-      setStatus('No markers detected \u2014 falling back to reading printed names…');
-      const base64 = canvasEl.toDataURL('image/jpeg', 0.85).split(',')[1];
-      await runVisionCallWithRateLimitHandling({
-        images: [base64],
-        cropCount: 0,
-        nonEmptyMarkers: [],
-        localCount: localCount,
-        extraWarnings: edgeWarnings
-      });
-      return;
-    }
-
-    // ---- Standard path: at least one non-empty marker needs vision ----
-    if (!currentApiKey()) {
-      const tierLabel = activeTier === 'turbo' ? 'Turbo' : 'Free-tier';
-      setStatus((localCount > 0 ? localCount + ' card(s) added locally. ' : '') + 'No ' + tierLabel + ' API key set — open Settings (\u2699\ufe0f) and paste one.');
-      showToast(tierLabel + ' API key missing — open Settings');
-      resumeLiveView(false);
-      return;
-    }
-
-    const crops = [];
-    const cropMarkers = [];
-    nonEmptyMarkers.forEach(marker => {
-      const cropCanvas = cropCardForVision(canvasEl, marker.corners);
-      if (!cropCanvas) return; // degenerate geometry — shouldn't happen for a real detection
-      crops.push(cropCanvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
-      cropMarkers.push(marker);
-    });
-
-    const fullPhotoBase64 = canvasEl.toDataURL('image/jpeg', 0.85).split(',')[1];
-    const images = crops.concat([fullPhotoBase64]);
-
-    setStatus('Sending ' + crops.length + ' card region(s) to the vision service…');
-
-    await runVisionCallWithRateLimitHandling({
-      images: images,
-      cropCount: crops.length,
-      nonEmptyMarkers: cropMarkers,
-      localCount: localCount,
-      extraWarnings: edgeWarnings
-    });
-  }
-
-  // Runs the Cards vision call (batched crops + optional full-photo
-  // fallback image, per captureFrame above), and if it fails
-  // specifically with a Free-tier rate limit (429), shows the
-  // Rate-Limit dialog instead of the generic error toast (Blueprint
-  // Section 2). Whichever button the person taps, this same in-flight
-  // capture is what gets resolved — "Wait" just lets the normal throttle
-  // queue retry it, "💲 Turbo" switches tier and immediately retries this
-  // exact capture with the new key/throttle.
-  async function runVisionCallWithRateLimitHandling(captureBundle) {
-    const images = captureBundle.images;
-    const cropCount = captureBundle.cropCount;
-    const nonEmptyMarkers = captureBundle.nonEmptyMarkers || [];
-    const localCount = captureBundle.localCount || 0;
-    const extraWarnings = captureBundle.extraWarnings || [];
-    const includeFallbackPhoto = images.length > cropCount;
-    const prompt = buildCardsVisionPrompt(cropCount, includeFallbackPhoto);
-
-    try {
-      const result = await enqueueVisionCall(() => VisionEngine.analyze(images, { prompt: prompt }));
-      const visionEntries = result.entries || [];
-      const visionWarnings = (result.warnings || []).map(w => (w || '').toString().trim()).filter(w => w);
-
-      const buildResult = buildCardResultsFromMarkers([], nonEmptyMarkers, visionEntries, cropCount);
-      applyCardResultsToTable(buildResult.results);
-
-      const totalCount = localCount + buildResult.results.length;
-      resumeLiveView(true);
-
-      const combinedWarnings = extraWarnings.concat(visionWarnings).concat(buildResult.warnings);
-      if (totalCount === 0) {
-        setStatus(combinedWarnings.length > 0 ? combinedWarnings.join(' ') : 'No card detected in that photo — try again.');
-        showToast('No card detected in that photo — try again');
-        return;
-      }
-      if (combinedWarnings.length > 0) {
-        setStatus(combinedWarnings.join(' '));
-        showToast(totalCount + ' card(s) scanned \u2014 see the status line for a warning');
-      } else {
-        setStatus(totalCount > 1 ? totalCount + ' cards added to the table.' : 'Scan added to the table.');
-      }
-    } catch (err) {
-      if (err && err.isRateLimit && activeTier === 'free') {
-        const choice = await showRateLimitDialog();
-        if (choice === 'turbo') {
-          // Turbo key missing — showRateLimitDialog already prompted and
-          // left the dialog open in that case; only proceed once a key
-          // actually got set.
-          if (!turboApiKey) {
-            resumeLiveView(false);
-            return;
-          }
-          setActiveTier('turbo');
-          showToast('Switched to 💲 Turbo — retrying this scan');
-          setStatus('Retrying with 💲 Turbo…');
-          await runVisionCallWithRateLimitHandling(captureBundle);
-          return;
-        }
-        // "Wait" — let the normal throttle queue retry naturally on the
-        // next Capture tap; don't auto-retry silently in the background.
-        setStatus('Still on Free tier — tap Capture again when ready.');
-        resumeLiveView(false);
-        return;
-      }
-
-      const msg = (err && err.message) || 'Scan not understood — try again.';
-      // Local (zero-vision) cards from this SAME capture already made it
-      // into the table before this call ever started — say so, so a
-      // vision failure doesn't read as "nothing happened" when part of
-      // it actually did.
-      const finalMsg = localCount > 0 ? (localCount + (localCount > 1 ? ' cards' : ' card') + ' added locally. ' + msg) : msg;
-      setStatus(finalMsg);
-      showToast(finalMsg);
-      resumeLiveView(false);
-    }
-  }
-
-  const shutterFlashEl = document.getElementById('shutter-flash');
-
-  // Brief white blink over the captured still, at the moment the shot is
-  // actually taken (Blueprint Section 6: "shutter feedback: brief
-  // preview blink"). Re-triggering the CSS animation on rapid repeat
-  // taps requires forcing a reflow between removing and re-adding the
-  // class, or the browser just no-ops the second animation.
-  function triggerShutterBlink() {
-    if (!shutterFlashEl) return;
-    shutterFlashEl.classList.remove('flash');
-    void shutterFlashEl.offsetWidth; // force reflow so the animation restarts cleanly
-    shutterFlashEl.classList.add('flash');
-  }
-
-  function resumeLiveView(showBanner) {
-    canvasEl.style.display = 'none';
-    if (cameraActive) {
-      videoEl.style.display = 'block';
-    }
-
-    if (showBanner) {
-      bannerEl.style.display = 'block';
-      setTimeout(() => {
-        bannerEl.style.display = 'none';
-        if (cameraActive) {
-          setStatus('Camera ready. Tap Capture for the next scan.');
-        }
-        capturing = false;
-      }, 1500);
-    } else {
-      capturing = false;
-    }
-  }
-
-  function stopCamera() {
-    if (mediaStream) {
-      mediaStream.getTracks().forEach(track => track.stop());
-    }
-    mediaStream = null;
-    cameraActive = false;
-    torchOn = false;
-    capturing = false;
-
-    videoEl.srcObject = null;
-    videoEl.style.display = 'none';
-    canvasEl.style.display = 'none';
-    bannerEl.style.display = 'none';
-    placeholderEl.style.display = 'block';
-
-    startCaptureBtn.textContent = 'Start';
-    torchToggleBtn.classList.remove('on');
-    updateCameraStateLayout(); // Blueprint v1.4 Section 8: restore the full review-state grid
-
-    setStatus('Camera stopped. Trial data is kept — tap Start to resume scanning.');
-  }
-
-  // Blueprint v1.7 Section 8: the button bar has exactly two states,
-  // driven off a single body class — camera-scanning collapses the full
-  // grid down to Stop·Capture·Undo (see the CSS overrides), which also
-  // hides #btn-import/#btn-roster (Import and the Roster toggle are
-  // both review-state-only actions). The table's fixed 5-row scan-state
-  // area (Blueprint Section 8a) also depends on cameraActive, so
-  // re-render here too — without this the table would keep showing its
-  // previous row set/ordering until some unrelated action happened to
-  // trigger a render.
-  function updateCameraStateLayout() {
-    document.body.classList.toggle('camera-scanning', cameraActive);
-    renderTable();
-  }
-
-  async function toggleTorch() {
-    if (!cameraActive) {
-      showToast('Start the camera first');
-      return;
-    }
-
-    const track = mediaStream.getVideoTracks()[0];
-    const capabilities = track.getCapabilities ? track.getCapabilities() : {};
-
-    if (!capabilities.torch) {
-      showToast('Flashlight not supported on this device/browser');
-      return;
-    }
-
-    const nextState = !torchOn;
-    try {
-      await track.applyConstraints({ advanced: [{ torch: nextState }] });
-      torchOn = nextState;
-      torchToggleBtn.classList.toggle('on', torchOn);
-      if (torchOn) {
-        showToast('Flashlight on — glare on laminated cards may worsen');
-      }
-    } catch (err) {
-      showToast('Could not toggle the flashlight');
-    }
-  }
-
-  function handleCameraError(err) {
-    let msg;
-    switch (err.name) {
-      case 'NotAllowedError':
-      case 'PermissionDeniedError':
-        msg = 'Camera permission denied. In Chrome, tap the lock icon next to the address bar → Permissions → allow Camera, then reload this page.';
-        break;
-      case 'NotFoundError':
-      case 'DevicesNotFoundError':
-        msg = 'No camera found on this device.';
-        break;
-      case 'NotReadableError':
-      case 'TrackStartError':
-        msg = 'The camera is already in use by another app. Close other camera apps and try again.';
-        break;
-      default:
-        msg = 'Camera error: ' + (err.message || err.name || 'unknown error') + '. Try reloading the page.';
-    }
-    setStatus(msg);
-    showToast('Camera error — see status message above');
-  }
-
-  // ---- Settings screen open/close ----
-  function openSettings() {
-    document.getElementById('settings-screen').style.display = 'block';
-  }
-
-  function closeSettings() {
-    document.getElementById('settings-screen').style.display = 'none';
-  }
-
-  // ---- Init ----
-  // (Blueprint v1.4 Section 8: the mode selector is now permanently the
-  // compact dropdown — the old viewport-based toggle between a 3-button
-  // row and a dropdown, and its resize/orientationchange listeners, are
-  // gone; there's nothing left to switch.)
-  loadSavedApiKey();
-  renderRosterToggleUI(); // Blueprint v1.7 Section 7: Roster button starts labeled "Roster: OFF"
-  ArucoEngine.init(); // Blueprint v1.7 Section 3.1 — failure here doesn't crash the app; captureFrame() checks .ready and reports it clearly when Capture is actually tapped
-  updateCameraStateLayout();
-
-  // ---------------------------------------------------------------
-  // SESSION ISOLATION (Blueprint Section 4)
-  // A genuine page reload already starts clean — tableData/undoSnapshot
-  // are freshly initialized above. The actual leak: mobile Chrome (and
-  // PWAs generally) often don't do a real reload when a tab/app is
-  // "closed" and reopened — they restore the page from the back/forward
-  // cache (bfcache), resuming the exact same in-memory JS state instead
-  // of re-running this script. That's how a previous session's table
-  // data can survive what looks, to the teacher, like closing the app.
-  // The 'pageshow' event's persisted flag is the standard signal that a
-  // bfcache restore (not a fresh load) just happened — so this is a
-  // detectable, fixable trigger, not a guess.
-  window.addEventListener('pageshow', function (event) {
-    if (event.persisted) {
-      tableData = {};
-      undoSnapshot = null;
-      roster = {}; // Section 7: roster persists "until... tab close"
-      activeRosterClassTitle = '';
-      rosterOn = false; // Section 7: toggle defaults OFF at every app launch, same as Anonymous used to
-      sortState = null; // table v2 view-state shouldn't bleed into a "new" session either
-      headerLabels = {};
-      sessionActionCounter = 0;
-      setActiveTier('free'); // Section 2: Free is the default at EVERY app launch, and a bfcache restore is a new session by this same logic
-      renderRosterToggleUI();
-      if (cameraActive) {
-        stopCamera(); // also calls updateCameraStateLayout() internally
-      } else {
-        updateCameraStateLayout();
-      }
-      setStatus('Ready. Tap Start to open the camera. (New session — previous scans cleared.)');
-    }
-  });
-</script>
-
-</body>
-</html>
+        showToast(localCount + ' card(s) scanned \u2014 see the status line for 
